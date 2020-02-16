@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-# https://www.kaggle.com/humananalog/deepfakes-inference-demo
+
 class VideoReader:
     """
     Helper class for reading one or more frames from a video file.
