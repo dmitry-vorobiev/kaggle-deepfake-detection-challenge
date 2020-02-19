@@ -8,29 +8,37 @@ from layers.functions.prior_box import PriorBox
 
 
 def detect(sample, model, cfg, device):
+    bs = cfg['batch_size']
     num_frames, height, width, ch = sample.shape
-    imgs, scale = prepare_imgs(sample, device)
+    imgs, scale = prepare_imgs(sample)
 
-    with torch.no_grad():
-        loc, conf, landms = model(imgs)
-    imgs, landms = None, None
-    
     priorbox = PriorBox(cfg, image_size=(height, width))
     priors = priorbox.forward().to(device)
+    scale = scale.to(device)
 
-    dets = postproc_detections(loc, conf, priors, scale, cfg)
-    return dets
+    detections = []
+    for start in range(0, num_frames, bs):
+        end = start + bs
+        imgs_batch = imgs[start:end].to(device)
+        with torch.no_grad():
+            loc, conf, landms = model(imgs_batch)
+        imgs_batch, landms = None, None
+        dets = postproc_detections(loc, conf, priors, scale, cfg)
+        detections.append(dets)
+        loc, conf = None, None
+    
+    return np.vstack(detections) if len(detections) > 1 else detections[0]
 
 
-def prepare_imgs(sample, device):
+def prepare_imgs(sample):
     n, h, w, c = sample.shape
     
     imgs = np.float32(sample)
     imgs -= (104, 117, 123)
     imgs = imgs.transpose(0, 3, 1, 2)
-    imgs = torch.from_numpy(imgs).to(device)
+    imgs = torch.from_numpy(imgs)
 
-    scale = torch.tensor([w, h, w, h], device=device)
+    scale = torch.tensor([w, h, w, h])
     return imgs, scale
 
 
