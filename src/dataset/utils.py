@@ -4,10 +4,11 @@ import numpy as np
 import pandas as pd
 
 
-def read_labels(base_path):
+def read_labels(base_path, chunk_dirs=None):
     if not os.path.isdir(base_path):
         raise ValueError('Invalid data dir')
-    chunk_dirs = os.listdir(base_path)
+    if not chunk_dirs:
+        chunk_dirs = os.listdir(base_path)
     labels = []
     for dir_name in chunk_dirs:
         path = os.path.join(base_path, dir_name, 'metadata.json')
