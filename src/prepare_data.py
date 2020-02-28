@@ -62,13 +62,13 @@ def round_num_faces(num_faces: int, frac_thresh=0.25) -> int:
 
 def prepare_data(
         start=0, end=None, chunk_dirs=None, max_open_files=300, 
-        num_frames=30, stride=10, num_pass=1, 
+        num_frames=30, stride=10, num_pass=1, gpu='0',
         use_cpu=False, batch_size=32, verbose=False,
         data_dir='', save_dir='', det_weights='', file_list_path=''):
     df = read_labels(data_dir, chunk_dirs=chunk_dirs)
     mkdirs(save_dir, df['dir'].unique())
     
-    device = torch.device("cpu" if use_cpu else "cuda")
+    device = torch.device("cpu" if use_cpu else "cuda:%s" % gpu)
     cfg = {**cfg_mnet, 'batch_size': batch_size}
     detector = init_detector(cfg, det_weights, use_cpu).to(device)
     detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
@@ -146,6 +146,15 @@ if __name__ == '__main__':
     parser.add_argument('--end', type=int, default=None, help='end index')
     parser.add_argument('--max_open_files', type=int, default=300, 
                         help='maximum open files to open with DALI pipe')
+    parser.add_argument('--num_frames', type=int, default=30, 
+                        help='max number of frames to use per each video')
+    parser.add_argument('--stride', type=int, default=10, 
+                        help='interval between consecutive frames')
+    parser.add_argument('--num_pass', type=int, default=1, 
+                        help='split parsing of each video into multiple '
+                             'passes to save GPU memory')
+    parser.add_argument('--batch_size', type=int, default=32, 
+                        help='batch size to use for detection')
     parser.add_argument('--data_dir', type=str, default='', 
                         help='where unpacked videos are stored')
     parser.add_argument('--save_dir', type=str, default='', 
@@ -153,16 +162,17 @@ if __name__ == '__main__':
     parser.add_argument('--det_weights', type=str, default='', 
                         help='weights for Pytorch_Retinaface model')
     parser.add_argument('--silent', action='store_true')
+    parser.add_argument('--gpus', type=str, default='0')
 
     args = parser.parse_args()
     verbose = not args.silent
+    gpus = args.gpus.split(',')
 
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
 
     print('Reading from %s' % args.data_dir)
     print('Saving to %s' % args.save_dir)
-    print('Detector weights: %s' % args.det_weights)
 
     prepare_data(
         start=args.start, end=args.end, 
@@ -170,11 +180,12 @@ if __name__ == '__main__':
         max_open_files=args.max_open_files, 
         file_list_path='./temp.txt', 
         verbose=verbose,
-        num_frames=30,
-        stride=10, 
-        num_pass=1, 
+        num_frames=args.num_frames,
+        stride=args.stride, 
+        num_pass=args.num_pass, 
         use_cpu=False, 
-        batch_size=32, 
+        batch_size=args.batch_size,
+        gpu=gpus[0],
         data_dir=args.data_dir, 
         save_dir=args.save_dir,
         det_weights=args.det_weights,
