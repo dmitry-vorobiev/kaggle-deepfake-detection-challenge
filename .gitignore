@@ -1,5 +1,8 @@
 .ipynb_checkpoints
 __pycache__
+.vscode
 
 data/*
 vendors/*
+
+temp.txt
