@@ -3,6 +3,7 @@ import gc
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from typing import List
 
@@ -15,7 +16,7 @@ import torch
 from torch import Tensor
 
 # TODO: make proper setup.py
-sys.path.insert(0, '../../vendors/Pytorch_Retinaface')
+sys.path.insert(0, '/home/dmitry/projects/dfdc/vendors/Pytorch_Retinaface')
 from data import cfg_mnet
 
 from dataset.utils import read_labels
@@ -144,6 +145,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--start', type=int, default=0, help='start index')
     parser.add_argument('--end', type=int, default=None, help='end index')
+    parser.add_argument('--chunks', type=str, default='')
     parser.add_argument('--max_open_files', type=int, default=300, 
                         help='maximum open files to open with DALI pipe')
     parser.add_argument('--num_frames', type=int, default=30, 
@@ -171,12 +173,15 @@ if __name__ == '__main__':
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
 
+    chunk_dirs = args.chunks.split(',')
+    chunk_dirs = [f'dfdc_train_part_{i}' for i in chunk_dirs] if len(chunk_dirs) else None
     print('Reading from %s' % args.data_dir)
     print('Saving to %s' % args.save_dir)
 
     prepare_data(
-        start=args.start, end=args.end, 
-        chunk_dirs=None, 
+        start=args.start, 
+        end=args.end, 
+        chunk_dirs=chunk_dirs, 
         max_open_files=args.max_open_files, 
         file_list_path='./temp.txt', 
         verbose=verbose,
