@@ -20,13 +20,19 @@ def expand_bbox(bbox: np.ndarray, pct: int) -> np.ndarray:
 
 
 @njit
+def fix_coords(bbox: np.ndarray, img_width: int, img_height: int) -> Tuple[int, int, int, int]:
+    x0, y0, x1, y1 = bbox.astype(np.int16)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(x1, img_width), min(y1, img_height)
+    return x0, y0, x1, y1
+
+
+@njit
 def crop_square(img: np.ndarray, bbox: np.ndarray, pad_pct=0.05) -> np.ndarray:
     img_h, img_w, _ = img.shape
     if pad_pct > 0:
         bbox = expand_bbox(bbox, pad_pct)
-    x0, y0, x1, y1 = bbox.astype(np.int16)
-    x0, y0 = max(0, x0), max(0, y0)
-    x1, y1 = min(x1, img_w), min(y1, img_h)
+    x0, y0, x1, y1 = fix_coords(bbox, img_w, img_h)
     w, h = x1 - x0, y1 - y0
     if w > h:
         pad = (w - h) // 2

@@ -1,12 +1,11 @@
 import argparse
-import concurrent.futures as futures
 import gc
+import multiprocessing as mp
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
-from typing import List
+from typing import List, Callable
 
 import cv2
 import numpy as np
@@ -39,12 +38,13 @@ def write_file_list(files: List[str], path: str) -> None:
             h.write(f'{f} {i}\n')
 
 
-def frames_to_faces(frames: np.ndarray, detect_fn) -> None:
+def find_faces(frames: np.ndarray, detect_fn: Callable, 
+               num_face_round_thresh: int) -> None:
     detections = detect_fn(frames)
     if isinstance(frames, Tensor):
         frames = frames.cpu().numpy()
     num_faces = np.array(list(map(len, detections)), dtype=np.uint8)
-    max_faces_per_frame = round_num_faces(num_faces, frac_thresh=0.25)
+    max_faces_per_frame = round_num_faces(num_faces, num_face_round_thresh)
     faces = []
     for f in range(len(frames)):
         for det in detections[f][:max_faces_per_frame]:
@@ -56,7 +56,7 @@ def frames_to_faces(frames: np.ndarray, detect_fn) -> None:
     return faces
 
 
-def round_num_faces(num_faces: int, frac_thresh=0.25) -> int:
+def round_num_faces(num_faces: int, frac_thresh: int) -> int:
     avg = num_faces.mean()
     fraction, integral = np.modf(avg)
     rounded = integral if fraction < frac_thresh else integral + 1
@@ -64,20 +64,19 @@ def round_num_faces(num_faces: int, frac_thresh=0.25) -> int:
 
 
 def prepare_data(
-        start=0, end=None, chunk_dirs=None, max_open_files=300, 
-        num_frames=30, stride=10, num_pass=1, gpu='0',
-        use_cpu=False, batch_size=32, verbose=False,
-        data_dir='', save_dir='', det_weights='', file_list_path=''):
+        start=0, end: int=None, chunk_dirs: List[str]=None, 
+        max_open_files=300, num_frames=30, stride=10, num_pass=1, gpu='0',
+        batch_size=32, verbose=False, num_face_round_thresh=0.4,
+        data_dir='', save_dir='', det_weights='', file_list_path='') -> None:
     df = read_labels(data_dir, chunk_dirs=chunk_dirs)
-    mkdirs(save_dir, df['dir'].unique())
     if end is None:
         end = len(df)
     seq_len = num_frames // num_pass
     print('Max sequences per sample: %d' % num_pass)
 
-    device = torch.device("cpu" if use_cpu else "cuda:{}".format(gpu))
+    device = torch.device('cuda:{}'.format(gpu))
     cfg = {**cfg_mnet, 'batch_size': batch_size}
-    detector = init_detector(cfg, det_weights, use_cpu).to(device)
+    detector = init_detector(cfg, det_weights, use_cpu=False).to(device)
     detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
     
     for start_pos in range(start, end, max_open_files):
@@ -104,7 +103,7 @@ def prepare_data(
                 read_idx =  video_batch[0]['label'].item()
                 abs_idx = start_pos + read_idx
                 meta = df.iloc[abs_idx]
-                faces = frames_to_faces(frames, detect_fn)
+                faces = find_faces(frames, detect_fn, num_face_round_thresh)
                 video_batch, frames = None, None
                 
                 dir_path = os.path.join(save_dir, meta.dir)
@@ -134,7 +133,7 @@ def prepare_data(
                 frames = read_frames_cv2(files[idx], num_frames)
                 abs_idx = start_pos + idx
                 meta = df.iloc[abs_idx]
-                faces = frames_to_faces(frames, detect_fn)
+                faces = find_faces(frames, detect_fn, num_face_round_thresh)
                 dump_to_disk(faces, os.path.join(save_dir, meta.dir), meta.name[:-4])
                 if verbose:
                     t1 = time.time()
@@ -172,6 +171,9 @@ if __name__ == '__main__':
                         help='weights for Pytorch_Retinaface model')
     parser.add_argument('--silent', action='store_true')
     parser.add_argument('--gpus', type=str, default='0')
+    parser.add_argument('--num_face_round_thresh', type=float, default=0.4, 
+                        help='round number of faces using custom threshold')
+
 
     args = parser.parse_args()
     verbose = not args.silent
@@ -179,9 +181,13 @@ if __name__ == '__main__':
 
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
-
     chunk_dirs = args.chunks.split(',')
-    chunk_dirs = [f'dfdc_train_part_{i}' for i in chunk_dirs] if len(chunk_dirs) else None
+    if len(chunk_dirs) > 0:
+        chunk_dirs = [f'dfdc_train_part_{i}' for i in chunk_dirs]
+        mkdirs(args.save_dir, chunk_dirs)
+    else:
+        chunk_dirs = None
+
     print('Reading from %s' % args.data_dir)
     print('Saving to %s' % args.save_dir)
 
@@ -193,8 +199,8 @@ if __name__ == '__main__':
         num_frames=args.num_frames,
         stride=args.stride, 
         num_pass=args.num_pass, 
-        use_cpu=False, 
         batch_size=args.batch_size,
+        num_face_round_thresh=args.num_face_round_thresh,
         data_dir=args.data_dir, 
         save_dir=args.save_dir,
         det_weights=args.det_weights,
@@ -205,15 +211,16 @@ if __name__ == '__main__':
             args.end = sizeof(args.data_dir, chunk_dirs)
         num_samples_per_gpu = (args.end - args.start) // len(gpus)
         jobs = []
-        with ProcessPoolExecutor(len(gpus)) as proc_pool:
+        with mp.Pool(len(gpus)) as proc_pool:
             for i, gpu in enumerate(gpus):
-                job = proc_pool.submit(proc_fn, 
+                job = proc_pool.apply_async(proc_fn, [], dict(
                     start=(num_samples_per_gpu * i), 
                     end=(num_samples_per_gpu * (i + 1)), 
                     gpu=gpu, 
-                    file_list_path=f'./temp_{gpu}.txt')
+                    file_list_path=f'./temp_{gpu}.txt'))
                 jobs.append(job)
-            futures.wait(jobs)
+            for job in jobs:
+                job.wait()
     else:
         proc_fn(start=args.start, 
                 end=args.end, 
