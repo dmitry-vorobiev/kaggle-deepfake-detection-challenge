@@ -18,7 +18,7 @@ def dump_to_disk(images: List[np.ndarray],
     if not os.path.isdir(dir_path):
         os.mkdir(dir_path)
     file_path = os.path.join(dir_path, filename+'.h5')
-    # write_hdf5(file_path, images, append=append)
+    write_hdf5(file_path, images, append=append)
 
 
 def write_hdf5(path: str, images: List[np.ndarray], append=False,

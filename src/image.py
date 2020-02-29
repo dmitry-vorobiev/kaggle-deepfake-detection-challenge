@@ -25,6 +25,8 @@ def crop_square(img: np.ndarray, bbox: np.ndarray, pad_pct=0.05) -> np.ndarray:
     if pad_pct > 0:
         bbox = expand_bbox(bbox, pad_pct)
     x0, y0, x1, y1 = bbox.astype(np.int16)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(x1, img_w), min(y1, img_h)
     w, h = x1 - x0, y1 - y0
     if w > h:
         pad = (w - h) // 2

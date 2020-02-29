@@ -50,7 +50,8 @@ def frames_to_faces(frames: np.ndarray, detect_fn) -> None:
         for det in detections[f][:max_faces_per_frame]:
             face = crop_square(frames[f], det[:4])
             face = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
-            faces.append(face)
+            if face is not None:
+                faces.append(face)
     detections = None
     return faces
 
@@ -114,9 +115,9 @@ def prepare_data(
                     proc_file_idxs[read_idx] = True
                 if verbose:
                     t1 = time.time()
-                    print('[%6d][%.02f s] %s/%s' % (abs_idx, t1 - t0, meta.dir, meta.name))
+                    print('[%s][%6d][%.02f s] %s/%s' % (
+                        str(device), abs_idx, t1 - t0, meta.dir, meta.name))
                     t0 = t1
-                    
         pipe, data_iter = None, None
         gc.collect()
         
@@ -137,8 +138,14 @@ def prepare_data(
                 dump_to_disk(faces, os.path.join(save_dir, meta.dir), meta.name[:-4])
                 if verbose:
                     t1 = time.time()
-                    print('[%6d][%.02f s] %s/%s' % (abs_idx, t1 - t0, meta.dir, meta.name))
+                    print('[%s][%6d][%.02f s] %s/%s' % (
+                        str(device), abs_idx, t1 - t0, meta.dir, meta.name))
     print('{}: DONE'.format(device))
+
+
+def sizeof(data_dir: str, chunk_dirs: List[str]):
+    df = read_labels(data_dir, chunk_dirs=chunk_dirs)
+    return len(df)
 
 
 if __name__ == '__main__':
@@ -194,7 +201,8 @@ if __name__ == '__main__':
     )
 
     if len(gpus) > 1:
-        assert args.end
+        if not args.end:
+            args.end = sizeof(args.data_dir, chunk_dirs)
         num_samples_per_gpu = (args.end - args.start) // len(gpus)
         jobs = []
         with ProcessPoolExecutor(len(gpus)) as proc_pool:
