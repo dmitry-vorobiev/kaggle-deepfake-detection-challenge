@@ -1,9 +1,10 @@
 import argparse
+import concurrent.futures as futures
 import gc
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
 from typing import List
 
@@ -68,22 +69,21 @@ def prepare_data(
         data_dir='', save_dir='', det_weights='', file_list_path=''):
     df = read_labels(data_dir, chunk_dirs=chunk_dirs)
     mkdirs(save_dir, df['dir'].unique())
-    
-    device = torch.device("cpu" if use_cpu else "cuda:%s" % gpu)
-    cfg = {**cfg_mnet, 'batch_size': batch_size}
-    detector = init_detector(cfg, det_weights, use_cpu).to(device)
-    detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
-    
     if end is None:
         end = len(df)
     seq_len = num_frames // num_pass
     print('Max sequences per sample: %d' % num_pass)
+
+    device = torch.device("cpu" if use_cpu else "cuda:{}".format(gpu))
+    cfg = {**cfg_mnet, 'batch_size': batch_size}
+    detector = init_detector(cfg, det_weights, use_cpu).to(device)
+    detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
     
     for start_pos in range(start, end, max_open_files):
         end_pos = min(start_pos + max_open_files, end)
         files = get_file_list(df, start_pos, end_pos, data_dir)
         write_file_list(files, path=file_list_path)
-        pipe = VideoPipe(file_list_path, seq_len=seq_len, stride=stride)
+        pipe = VideoPipe(file_list_path, seq_len=seq_len, stride=stride, device_id=int(gpu))
         pipe.build()
         num_samples = len(files)
         num_samples_read = pipe.epoch_size('reader')
@@ -138,7 +138,7 @@ def prepare_data(
                 if verbose:
                     t1 = time.time()
                     print('[%6d][%.02f s] %s/%s' % (abs_idx, t1 - t0, meta.dir, meta.name))
-    print('DONE')
+    print('{}: DONE'.format(device))
 
 
 if __name__ == '__main__':
@@ -178,9 +178,7 @@ if __name__ == '__main__':
     print('Reading from %s' % args.data_dir)
     print('Saving to %s' % args.save_dir)
 
-    prepare_data(
-        start=args.start, 
-        end=args.end, 
+    proc_fn = partial(prepare_data, 
         chunk_dirs=chunk_dirs, 
         max_open_files=args.max_open_files, 
         file_list_path='./temp.txt', 
@@ -190,8 +188,26 @@ if __name__ == '__main__':
         num_pass=args.num_pass, 
         use_cpu=False, 
         batch_size=args.batch_size,
-        gpu=gpus[0],
         data_dir=args.data_dir, 
         save_dir=args.save_dir,
         det_weights=args.det_weights,
     )
+
+    if len(gpus) > 1:
+        assert args.end
+        num_samples_per_gpu = (args.end - args.start) // len(gpus)
+        jobs = []
+        with ProcessPoolExecutor(len(gpus)) as proc_pool:
+            for i, gpu in enumerate(gpus):
+                job = proc_pool.submit(proc_fn, 
+                    start=(num_samples_per_gpu * i), 
+                    end=(num_samples_per_gpu * (i + 1)), 
+                    gpu=gpu, 
+                    file_list_path=f'./temp_{gpu}.txt')
+                jobs.append(job)
+            futures.wait(jobs)
+    else:
+        proc_fn(start=args.start, 
+                end=args.end, 
+                gpu=gpus[0], 
+                file_list_path='./temp.txt')

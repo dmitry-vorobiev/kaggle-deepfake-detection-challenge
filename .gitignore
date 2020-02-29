@@ -5,4 +5,4 @@ __pycache__
 data/*
 vendors/*
 
-temp.txt
+temp*.txt
