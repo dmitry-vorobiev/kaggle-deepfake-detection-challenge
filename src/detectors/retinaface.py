@@ -1,4 +1,7 @@
+import math
+import numba
 import numpy as np
+
 import torch
 from torch import Tensor
 from typing import Dict, List, Tuple, Union
@@ -8,10 +11,19 @@ from models.retinaface import RetinaFace
 from utils.nms.py_cpu_nms import py_cpu_nms
 
 
+@numba.njit
+def adjust_bs(bs: int, height: int, width: int) -> int:
+    pixels = width * height
+    down_ratio = math.ceil(pixels / 2073600) # full_hd = 1, quad_hd = 2
+    # TODO: check if it's enough, otherwise **2
+    return bs // down_ratio
+
+
 def detect(sample: Union[np.ndarray, Tensor], model: torch.nn.Module, 
            cfg: Dict[str,any], device: torch.device) -> List[np.ndarray]:
-    bs = cfg['batch_size']
     num_frames, height, width, ch = sample.shape
+    bs = cfg['batch_size']
+    bs = adjust_bs(bs, height, width)
     imgs, scale = prepare_imgs(sample)
     
     priorbox = PriorBox(cfg, image_size=(height, width))
@@ -105,10 +117,10 @@ def postproc_frame(
 
 
 def init_detector(cfg: Dict[str, any], weights: Dict[str, Tensor], 
-                  use_cpu=False) -> torch.nn.Module:
+                  device: torch.device) -> torch.nn.Module:
     cfg['pretrain'] = False
     net = RetinaFace(cfg=cfg, phase='test')
-    net = load_model(net, weights, use_cpu)
+    net = load_model(net, weights, device)
     net.eval()
     return net
 
@@ -134,17 +146,16 @@ def remove_prefix(state_dict, prefix):
     return {f(key): value for key, value in state_dict.items()}
 
 
-def load_model(model, pretrained_path, load_to_cpu):
+def load_model(model, pretrained_path, device=None):
     print('Loading pretrained model from {}'.format(pretrained_path))
-    if load_to_cpu:
-        pretrained_dict = torch.load(
-            pretrained_path, 
-            map_location=lambda storage, loc: storage)
-    else:
-        device = torch.cuda.current_device()
+    if device:
         pretrained_dict = torch.load(
             pretrained_path, 
             map_location=lambda storage, loc: storage.cuda(device))
+    else:
+        pretrained_dict = torch.load(
+            pretrained_path, 
+            map_location=lambda storage, loc: storage)
     if "state_dict" in pretrained_dict.keys():
         pretrained_dict = remove_prefix(pretrained_dict['state_dict'], 'module.')
     else:

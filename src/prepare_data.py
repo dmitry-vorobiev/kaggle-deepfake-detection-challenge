@@ -73,7 +73,7 @@ def prepare_data(
 
     device = torch.device('cuda:{}'.format(gpu))
     cfg = {**cfg_mnet, 'batch_size': batch_size}
-    detector = init_detector(cfg, det_weights, use_cpu=False).to(device)
+    detector = init_detector(cfg, det_weights, device).to(device)
     detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
     
     for start_pos in range(start, end, max_open_files):
