@@ -1,6 +1,6 @@
 import argparse
+import concurrent.futures as futures
 import gc
-import multiprocessing as mp
 import os
 import sys
 import time
@@ -39,15 +39,15 @@ def write_file_list(files: List[str], path: str) -> None:
 
 
 def find_faces(frames: np.ndarray, detect_fn: Callable, 
-               num_face_round_thresh: int) -> None:
+               max_face_num_thresh: float) -> None:
     detections = detect_fn(frames)
     if isinstance(frames, Tensor):
         frames = frames.cpu().numpy()
     num_faces = np.array(list(map(len, detections)), dtype=np.uint8)
-    max_faces_per_frame = round_num_faces(num_faces, num_face_round_thresh)
+    max_faces = max_num_faces(num_faces, max_face_num_thresh)
     faces = []
     for f in range(len(frames)):
-        for det in detections[f][:max_faces_per_frame]:
+        for det in detections[f][:max_faces]:
             face = crop_square(frames[f], det[:4])
             face = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
             if face is not None:
@@ -56,21 +56,18 @@ def find_faces(frames: np.ndarray, detect_fn: Callable,
     return faces
 
 
-def round_num_faces(num_faces: int, frac_thresh: int) -> int:
-    avg = num_faces.mean()
-    fraction, integral = np.modf(avg)
-    rounded = integral if fraction < frac_thresh else integral + 1
-    return int(rounded)
+def max_num_faces(num_faces_per_frame: np.ndarray, uniq_frac_thresh: float) -> int:
+    uniq_vals, uniq_freq = np.unique(num_faces_per_frame, return_counts=True)
+    mask = uniq_freq / len(num_faces_per_frame) > uniq_frac_thresh
+    return uniq_vals[mask].max()
 
 
 def prepare_data(
-        start=0, end: int=None, chunk_dirs: List[str]=None, 
+        start: int, end: int, chunk_dirs: List[str]=None, 
         max_open_files=300, num_frames=30, stride=10, num_pass=1, gpu='0',
-        batch_size=32, verbose=False, num_face_round_thresh=0.4,
+        batch_size=32, verbose=False, max_face_num_thresh=0.25,
         data_dir='', save_dir='', det_weights='', file_list_path='') -> None:
     df = read_labels(data_dir, chunk_dirs=chunk_dirs)
-    if end is None:
-        end = len(df)
     seq_len = num_frames // num_pass
     print('Max sequences per sample: %d' % num_pass)
 
@@ -103,7 +100,7 @@ def prepare_data(
                 read_idx =  video_batch[0]['label'].item()
                 abs_idx = start_pos + read_idx
                 meta = df.iloc[abs_idx]
-                faces = find_faces(frames, detect_fn, num_face_round_thresh)
+                faces = find_faces(frames, detect_fn, max_face_num_thresh)
                 video_batch, frames = None, None
                 
                 dir_path = os.path.join(save_dir, meta.dir)
@@ -133,7 +130,7 @@ def prepare_data(
                 frames = read_frames_cv2(files[idx], num_frames)
                 abs_idx = start_pos + idx
                 meta = df.iloc[abs_idx]
-                faces = find_faces(frames, detect_fn, num_face_round_thresh)
+                faces = find_faces(frames, detect_fn, max_face_num_thresh)
                 dump_to_disk(faces, os.path.join(save_dir, meta.dir), meta.name[:-4])
                 if verbose:
                     t1 = time.time()
@@ -171,8 +168,8 @@ if __name__ == '__main__':
                         help='weights for Pytorch_Retinaface model')
     parser.add_argument('--silent', action='store_true')
     parser.add_argument('--gpus', type=str, default='0')
-    parser.add_argument('--num_face_round_thresh', type=float, default=0.4, 
-                        help='round number of faces using custom threshold')
+    parser.add_argument('--max_face_num_thresh', type=float, default=0.25,
+                        help='cut detections based on the frequency encoding')
 
 
     args = parser.parse_args()
@@ -200,29 +197,29 @@ if __name__ == '__main__':
         stride=args.stride, 
         num_pass=args.num_pass, 
         batch_size=args.batch_size,
-        num_face_round_thresh=args.num_face_round_thresh,
+        max_face_num_thresh=args.max_face_num_thresh,
         data_dir=args.data_dir, 
         save_dir=args.save_dir,
         det_weights=args.det_weights,
     )
 
+    start, end = args.start, args.end
+
     if len(gpus) > 1:
-        if not args.end:
-            args.end = sizeof(args.data_dir, chunk_dirs)
-        num_samples_per_gpu = (args.end - args.start) // len(gpus)
+        if not end:
+            end = sizeof(args.data_dir, chunk_dirs)
+        num_samples_per_gpu = (end - start) // len(gpus)
         jobs = []
-        with mp.Pool(len(gpus)) as proc_pool:
+        with futures.ProcessPoolExecutor(len(gpus)) as ex:
             for i, gpu in enumerate(gpus):
-                job = proc_pool.apply_async(proc_fn, [], dict(
-                    start=(num_samples_per_gpu * i), 
-                    end=(num_samples_per_gpu * (i + 1)), 
+                job = ex.submit(proc_fn,
+                    start=(start + num_samples_per_gpu * i), 
+                    end=(start + num_samples_per_gpu * (i+1)), 
                     gpu=gpu, 
-                    file_list_path=f'./temp_{gpu}.txt'))
+                    file_list_path=f'./temp_{gpu}.txt')
                 jobs.append(job)
-            for job in jobs:
-                job.wait()
+            futures.wait(jobs)
+        for job in jobs:
+            _ = job.result()
     else:
-        proc_fn(start=args.start, 
-                end=args.end, 
-                gpu=gpus[0], 
-                file_list_path='./temp.txt')
+        proc_fn(start, end, gpu=gpus[0], file_list_path='./temp.txt')
