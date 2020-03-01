@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import nvidia.dali as dali
@@ -32,6 +33,9 @@ def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None) -> np.ndarr
 
     Original: https://www.kaggle.com/humananalog/deepfakes-inference-demo
     """
+    if not os.path.isfile(path):
+        print('No such file: %s' % path)
+        return None
     capture = cv2.VideoCapture(path)
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     if frame_count <= 0: 

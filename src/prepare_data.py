@@ -35,7 +35,8 @@ def get_file_list(df: pd.DataFrame, start: int, end: int,
 def write_file_list(files: List[str], path: str) -> None:    
     with open(path, mode='w') as h:
         for i, f in enumerate(files):
-            h.write(f'{f} {i}\n')
+            if os.path.isfile(f):
+                h.write(f'{f} {i}\n')
 
 
 def find_faces(frames: np.ndarray, detect_fn: Callable, 
@@ -128,14 +129,15 @@ def prepare_data(
                 if verbose: 
                     t0 = time.time()
                 frames = read_frames_cv2(files[idx], num_frames)
-                abs_idx = start_pos + idx
-                meta = df.iloc[abs_idx]
-                faces = find_faces(frames, detect_fn, max_face_num_thresh)
-                dump_to_disk(faces, os.path.join(save_dir, meta.dir), meta.name[:-4])
-                if verbose:
-                    t1 = time.time()
-                    print('[%s][%6d][%.02f s] %s/%s' % (
-                        str(device), abs_idx, t1 - t0, meta.dir, meta.name))
+                if frames is not None:
+                    abs_idx = start_pos + idx
+                    meta = df.iloc[abs_idx]
+                    faces = find_faces(frames, detect_fn, max_face_num_thresh)
+                    dump_to_disk(faces, os.path.join(save_dir, meta.dir), meta.name[:-4])
+                    if verbose:
+                        t1 = time.time()
+                        print('[%s][%6d][%.02f s] %s/%s' % (
+                            str(device), abs_idx, t1 - t0, meta.dir, meta.name))
     print('{}: DONE'.format(device))
 
 
@@ -204,10 +206,10 @@ if __name__ == '__main__':
     )
 
     start, end = args.start, args.end
+    if not end:
+        end = sizeof(args.data_dir, chunk_dirs)
 
     if len(gpus) > 1:
-        if not end:
-            end = sizeof(args.data_dir, chunk_dirs)
         num_samples_per_gpu = (end - start) // len(gpus)
         jobs = []
         with futures.ProcessPoolExecutor(len(gpus)) as ex:
