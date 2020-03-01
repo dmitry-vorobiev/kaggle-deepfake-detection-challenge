@@ -14,9 +14,16 @@ from utils.nms.py_cpu_nms import py_cpu_nms
 @numba.njit
 def adjust_bs(bs: int, height: int, width: int) -> int:
     pixels = width * height
-    down_ratio = math.ceil(pixels / 2073600) # full_hd = 1, quad_hd = 2
-    # TODO: check if it's enough, otherwise **2
+    # full_hd = 1, quad_hd = 4
+    down_ratio = math.ceil(pixels / 2073600)**2
     return bs // down_ratio
+
+# @numba.njit
+# def adjust_bs(bs: int, height: int, width: int) -> int:
+#     pixels = width * height
+#     # full_hd = 1, quad_hd = 3
+#     down_ratio = math.ceil((pixels / 2073600) - 1) * 2 + 1
+#     return bs // down_ratio
 
 
 def detect(sample: Union[np.ndarray, Tensor], model: torch.nn.Module, 
