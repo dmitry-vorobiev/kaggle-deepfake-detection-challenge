@@ -5,6 +5,11 @@ import cv2
 import h5py
 import numpy as np
 
+FORMAT_OPTIONS = {
+    'png': [cv2.IMWRITE_PNG_COMPRESSION, 5],
+    'webp': None
+}
+
 
 def mkdirs(base_dir: str, chunk_dirs: List[str]) -> None:
     for chunk_dir in chunk_dirs:
@@ -26,15 +31,16 @@ def dump_to_disk(images: List[np.ndarray], dir_path: str,
 
 
 def write_hdf5(path: str, images: List[np.ndarray], img_format: str,
-               append=False, opts=dict(compression=6, shuffle=True)) -> None:
+               append=False, hdf5_opts=dict(compression=3, shuffle=True)) -> None:
     mode = 'a' if append else 'w'
     img_ext = '.' + img_format
+    img_opts = FORMAT_OPTIONS[img_format]
     with h5py.File(path, mode) as file:
         offset = len(file) if append else 0
         for i, image in enumerate(images):
+            img_bytes = cv2.imencode(img_ext, image, img_opts)[1]
             dataset = file.create_dataset(
-                '%03d' % (i + offset), 
-                data=cv2.imencode(img_ext, image)[1], **opts)
+                '%03d' % (i + offset), data=img_bytes, **hdf5_opts)
 
 
 def read_hdf5(path: str, num_frames=30) -> List[np.ndarray]:
