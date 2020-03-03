@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from functools import partial
-from typing import List, Callable
+from typing import Dict, List, Callable
 
 import cv2
 import numpy as np
@@ -63,29 +63,26 @@ def max_num_faces(num_faces_per_frame: np.ndarray, uniq_frac_thresh: float) -> i
     return uniq_vals[mask].max()
 
 
-def prepare_data(
-        start: int, end: int, chunk_dirs: List[str]=None, 
-        max_open_files=300, num_frames=30, stride=10, num_pass=1, gpu='0',
-        batch_size=32, verbose=False, max_face_num_thresh=0.25,
-        data_dir='', save_dir='', det_weights='', file_list_path='') -> None:
-    df = read_labels(data_dir, chunk_dirs=chunk_dirs)
-    seq_len = num_frames // num_pass
-    print('Max sequences per sample: %d' % num_pass)
+def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0', 
+                 args: Dict[str, any]=None) -> None:
+    df = read_labels(args.data_dir, chunk_dirs=chunk_dirs)
+    seq_len = args.num_frames // args.num_pass
 
     device = torch.device('cuda:{}'.format(gpu))
-    cfg = {**cfg_mnet, 'batch_size': batch_size}
-    detector = init_detector(cfg, det_weights, device).to(device)
+    cfg = {**cfg_mnet, 'batch_size': args.batch_size}
+    detector = init_detector(cfg, args.det_weights, device).to(device)
     detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
+    file_list_path = '{}_{}'.format(args.file_list_path, gpu)
     
-    for start_pos in range(start, end, max_open_files):
-        end_pos = min(start_pos + max_open_files, end)
-        files = get_file_list(df, start_pos, end_pos, data_dir)
+    for start_pos in range(start, end, args.max_open_files):
+        end_pos = min(start_pos + args.max_open_files, end)
+        files = get_file_list(df, start_pos, end_pos, args.data_dir)
         write_file_list(files, path=file_list_path)
-        pipe = VideoPipe(file_list_path, seq_len=seq_len, stride=stride, device_id=int(gpu))
+        pipe = VideoPipe(file_list_path, seq_len=seq_len, stride=args.stride, device_id=int(gpu))
         pipe.build()
         num_samples = len(files)
         num_samples_read = pipe.epoch_size('reader')
-        num_bad_samples = num_samples - num_samples_read / num_pass
+        num_bad_samples = num_samples - num_samples_read / args.num_pass
         run_fallback_reader = num_bad_samples > 0
         if run_fallback_reader:
             proc_file_idxs = np.zeros(num_samples, dtype=np.bool)
@@ -93,7 +90,7 @@ def prepare_data(
         if num_samples_read > 0:
             data_iter = DALIGenericIterator(
                 [pipe], ['frames', 'label'], num_samples_read, dynamic_shape=True)
-            if verbose: 
+            if args.verbose: 
                 t0 = time.time()
             prev_idx = None
             for video_batch in data_iter:
@@ -101,18 +98,19 @@ def prepare_data(
                 read_idx =  video_batch[0]['label'].item()
                 abs_idx = start_pos + read_idx
                 meta = df.iloc[abs_idx]
-                faces = find_faces(frames, detect_fn, max_face_num_thresh)
+                faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
                 video_batch, frames = None, None
                 
-                dir_path = os.path.join(save_dir, meta.dir)
+                dir_path = os.path.join(args.save_dir, meta.dir)
                 append = prev_idx == read_idx
-                dump_to_disk(faces, dir_path, meta.name[:-4], append=append)
+                dump_to_disk(faces, dir_path, meta.name[:-4], args.img_format, 
+                             append=append)
                 prev_idx = read_idx
                 if run_fallback_reader:
                     proc_file_idxs[read_idx] = True
-                if verbose:
+                if args.verbose:
                     t1 = time.time()
-                    print('[%s][%6d][%.02f s] %s/%s' % (
+                    print('[%s | DALI][%6d][%.02f s] %s/%s' % (
                         str(device), abs_idx, t1 - t0, meta.dir, meta.name))
                     t0 = t1
         pipe, data_iter = None, None
@@ -126,17 +124,18 @@ def prepare_data(
             print('Unable to parse %d videos with DALI' % num_bad_samples)
             print('Running fallback decoding through OpenCV...')
             for idx in unproc_file_idxs:
-                if verbose: 
+                if args.verbose: 
                     t0 = time.time()
-                frames = read_frames_cv2(files[idx], num_frames)
+                frames = read_frames_cv2(files[idx], args.num_frames)
                 if frames is not None:
                     abs_idx = start_pos + idx
                     meta = df.iloc[abs_idx]
-                    faces = find_faces(frames, detect_fn, max_face_num_thresh)
-                    dump_to_disk(faces, os.path.join(save_dir, meta.dir), meta.name[:-4])
-                    if verbose:
+                    faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
+                    dump_to_disk(faces, os.path.join(args.save_dir, meta.dir), 
+                                 meta.name[:-4], args.img_format)
+                    if args.verbose:
                         t1 = time.time()
-                        print('[%s][%6d][%.02f s] %s/%s' % (
+                        print('[%s | OpenCV][%6d][%.02f s] %s/%s' % (
                             str(device), abs_idx, t1 - t0, meta.dir, meta.name))
     print('{}: DONE'.format(device))
 
@@ -172,10 +171,12 @@ if __name__ == '__main__':
     parser.add_argument('--gpus', type=str, default='0')
     parser.add_argument('--max_face_num_thresh', type=float, default=0.25,
                         help='cut detections based on the frequency encoding')
-
+    parser.add_argument('--img_format', type=str, default='png', 
+                        choices=['png', 'webp'])
 
     args = parser.parse_args()
-    verbose = not args.silent
+    args.verbose = not args.silent
+    args.file_list_path = './temp'
     gpus = args.gpus.split(',')
 
     if not os.path.exists(args.save_dir):
@@ -187,23 +188,13 @@ if __name__ == '__main__':
     else:
         chunk_dirs = None
 
-    print('Reading from %s' % args.data_dir)
-    print('Saving to %s' % args.save_dir)
+    print('reading from %s' % args.data_dir)
+    print('saving to %s' % args.save_dir)
+    print('DALI settings:\n'
+          '  max simultaneosly open files: %d\n'
+          '  num pass per video: %d' % (args.max_open_files, args.num_pass))
 
-    proc_fn = partial(prepare_data, 
-        chunk_dirs=chunk_dirs, 
-        max_open_files=args.max_open_files, 
-        file_list_path='./temp.txt', 
-        verbose=verbose,
-        num_frames=args.num_frames,
-        stride=args.stride, 
-        num_pass=args.num_pass, 
-        batch_size=args.batch_size,
-        max_face_num_thresh=args.max_face_num_thresh,
-        data_dir=args.data_dir, 
-        save_dir=args.save_dir,
-        det_weights=args.det_weights,
-    )
+    proc_fn = partial(prepare_data, chunk_dirs=chunk_dirs, args=args)
 
     start, end = args.start, args.end
     if not end:
@@ -217,11 +208,10 @@ if __name__ == '__main__':
                 job = ex.submit(proc_fn,
                     start=(start + num_samples_per_gpu * i), 
                     end=(start + num_samples_per_gpu * (i+1)), 
-                    gpu=gpu, 
-                    file_list_path=f'./temp_{gpu}.txt')
+                    gpu=gpu)
                 jobs.append(job)
             futures.wait(jobs)
         for job in jobs:
             _ = job.result()
     else:
-        proc_fn(start, end, gpu=gpus[0], file_list_path='./temp.txt')
+        proc_fn(start, end, gpu=gpus[0])

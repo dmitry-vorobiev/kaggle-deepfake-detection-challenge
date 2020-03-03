@@ -13,23 +13,28 @@ def mkdirs(base_dir: str, chunk_dirs: List[str]) -> None:
             os.mkdir(dir_path)
 
 
-def dump_to_disk(images: List[np.ndarray], 
-                 dir_path: str, filename: str, append=False) -> None:
+def dump_to_disk(images: List[np.ndarray], dir_path: str, 
+                 filename: str, img_format: str, 
+                 append=False) -> None:
     if not os.path.isdir(dir_path):
         os.mkdir(dir_path)
-    file_path = os.path.join(dir_path, filename+'.h5')
-    write_hdf5(file_path, images, append=append)
+    if len(images) > 0:
+        file_path = os.path.join(dir_path, filename+'.h5')
+        write_hdf5(file_path, images, img_format, append=append)
+    else:
+        print('No frames found %s/%s.mp4' % (dir_path, filename))
 
 
-def write_hdf5(path: str, images: List[np.ndarray], append=False,
-               opts=dict(compression=6, shuffle=True)) -> None:
+def write_hdf5(path: str, images: List[np.ndarray], img_format: str,
+               append=False, opts=dict(compression=6, shuffle=True)) -> None:
     mode = 'a' if append else 'w'
+    img_ext = '.' + img_format
     with h5py.File(path, mode) as file:
         offset = len(file) if append else 0
         for i, image in enumerate(images):
             dataset = file.create_dataset(
                 '%03d' % (i + offset), 
-                data=cv2.imencode('.png', image)[1], **opts)
+                data=cv2.imencode(img_ext, image)[1], **opts)
 
 
 def read_hdf5(path: str, num_frames=30) -> List[np.ndarray]:
