@@ -17,7 +17,9 @@ then go to `src/prepare_data.py` and update this line with path to Pytorch_Retin
 sys.path.insert(0, '/home/dmitry/projects/dfdc/vendors/Pytorch_Retinaface')
 ```
 
-4. Install other non-standart pip packages:
+4. Download pretrained weights from [Google Drive](https://drive.google.com/drive/folders/1oZRSG0ZegbVkVwUd8wUIQx8W7yfZ_ki1).
+
+5. Install other non-standart pip packages:
 ```
 pip install h5py
 ```
