@@ -17,7 +17,7 @@ from torch import Tensor
 
 # TODO: make proper setup.py
 sys.path.insert(0, '/home/dmitry/projects/dfdc/vendors/Pytorch_Retinaface')
-from data import cfg_mnet
+from data import cfg_mnet, cfg_re50
 
 from dataset.utils import read_labels
 from detectors.retinaface import detect, init_detector
@@ -40,7 +40,7 @@ def write_file_list(files: List[str], path: str) -> None:
 
 
 def find_faces(frames: np.ndarray, detect_fn: Callable, 
-               max_face_num_thresh: float) -> None:
+               max_face_num_thresh: float) -> List[np.ndarray]:
     detections = detect_fn(frames)
     if isinstance(frames, Tensor):
         frames = frames.cpu().numpy()
@@ -50,7 +50,6 @@ def find_faces(frames: np.ndarray, detect_fn: Callable,
     for f in range(len(frames)):
         for det in detections[f][:max_faces]:
             face = crop_square(frames[f], det[:4])
-            face = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
             if face is not None:
                 faces.append(face)
     detections = None
@@ -70,13 +69,18 @@ def wait_to_complete(tasks: List[futures.Future]) -> List:
     return []
 
 
+def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
+    cfg = cfg_mnet if args.det_encoder == 'mnet' else cfg_re50
+    cfg = {**cfg, 'batch_size': args.batch_size}
+    return cfg   
+
+
 def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0', 
                  args: Dict[str, any]=None) -> None:
     df = read_labels(args.data_dir, chunk_dirs=chunk_dirs)
     seq_len = args.num_frames // args.num_pass
-
     device = torch.device('cuda:{}'.format(gpu))
-    cfg = {**cfg_mnet, 'batch_size': args.batch_size}
+    cfg = detector_cfg(args)
     detector = init_detector(cfg, args.det_weights, device).to(device)
     detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
     file_list_path = '{}_{}'.format(args.file_list_path, gpu)
@@ -184,6 +188,8 @@ def parse_args() -> Dict[str, any]:
                         help='where unpacked videos are stored')
     parser.add_argument('--save_dir', type=str, default='', 
                         help='where to save packed images')
+    parser.add_argument('--det_encoder', type=str, default='mnet', 
+                        choices=['mnet', 'resnet50'])
     parser.add_argument('--det_weights', type=str, default='', 
                         help='weights for Pytorch_Retinaface model')
     parser.add_argument('--silent', action='store_true')

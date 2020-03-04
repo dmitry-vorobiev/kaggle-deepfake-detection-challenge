@@ -38,6 +38,7 @@ def write_hdf5(path: str, images: List[np.ndarray], img_format: str,
     with h5py.File(path, mode) as file:
         offset = len(file) if append else 0
         for i, image in enumerate(images):
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             img_bytes = cv2.imencode(img_ext, image, img_opts)[1]
             dataset = file.create_dataset(
                 '%03d' % (i + offset), data=img_bytes, **hdf5_opts)
