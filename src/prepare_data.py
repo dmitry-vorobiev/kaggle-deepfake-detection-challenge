@@ -1,5 +1,5 @@
 import argparse
-import concurrent.futures as futures
+import concurrent.futures as fut
 import gc
 import os
 import sys
@@ -62,13 +62,6 @@ def max_num_faces(num_faces_per_frame: np.ndarray, uniq_frac_thresh: float) -> i
     return uniq_vals[mask].max()
 
 
-def wait_to_complete(tasks: List[futures.Future]) -> List:
-    futures.wait(tasks)
-    for task in tasks:
-        _ = task.result()
-    return []
-
-
 def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
     cfg = cfg_mnet if args.det_encoder == 'mnet' else cfg_re50
     cfg = {**cfg, 'batch_size': args.batch_size}
@@ -84,9 +77,27 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
     detector = init_detector(cfg, args.det_weights, device).to(device)
     detect_fn = partial(detect, model=detector, cfg=cfg, device=device)
     file_list_path = '{}_{}'.format(args.file_list_path, gpu)
+    tasks = []
 
-    with futures.ProcessPoolExecutor(args.num_workers) as subproc:
-        tasks = []
+    def save(images: List[np.ndarray], meta: pd.Series, append=False) -> None:
+        dir_path = os.path.join(args.save_dir, meta.dir)
+        task = subproc.submit(
+            dump_to_disk, images, dir_path, meta.name[:-4], 
+            args.img_format, append=append)
+        tasks.append(task)
+
+    def maybe_wait(tasks: List[fut.Future]) -> List[fut.Future]:
+        nw = args.num_workers
+        if len(tasks) > args.task_queue_depth * nw:
+            old_tasks, new_tasks = tasks[:-nw], tasks[-nw:]
+            fut.wait(old_tasks)
+            for task in old_tasks:
+                _ = task.result()
+            return new_tasks
+        else:
+            return tasks
+
+    with fut.ProcessPoolExecutor(args.num_workers) as subproc:
         for start_pos in range(start, end, args.max_open_files):
             end_pos = min(start_pos + args.max_open_files, end)
             files = get_file_list(df, start_pos, end_pos, args.data_dir)
@@ -115,12 +126,8 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
                     video_batch, frames = None, None
                     abs_idx = start_pos + read_idx
                     meta = df.iloc[abs_idx]
-                    dir_path = os.path.join(args.save_dir, meta.dir)
                     append = prev_idx == read_idx
-                    task = subproc.submit(dump_to_disk, 
-                        faces, dir_path, meta.name[:-4], 
-                        args.img_format, append=append)
-                    tasks.append(task)
+                    save(faces, meta, append=append)
                     prev_idx = read_idx
                     if run_fallback_reader:
                         proc_file_idxs[read_idx] = True
@@ -129,10 +136,10 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
                         print('[%s | DALI][%6d][%.02f s] %s/%s' % (
                             str(device), abs_idx, t1 - t0, meta.dir, meta.name))
                         t0 = t1
-                    if len(tasks) > args.task_queue_depth * args.num_workers:
-                        tasks = wait_to_complete(tasks)
+                    tasks = maybe_wait(tasks)
             pipe, data_iter = None, None
             gc.collect()
+            tasks = maybe_wait(tasks)
             
             if run_fallback_reader:
                 unproc_file_idxs = (~proc_file_idxs).nonzero()[0]
@@ -149,17 +156,12 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
                         faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
                         abs_idx = start_pos + idx
                         meta = df.iloc[abs_idx]
-                        dir_path = os.path.join(args.save_dir, meta.dir)
-                        task = subproc.submit(dump_to_disk, 
-                            faces, dir_path, meta.name[:-4], 
-                            args.img_format, append=False)
-                        tasks.append(task)
+                        save(faces, meta, append=False)
                         if args.verbose:
                             t1 = time.time()
                             print('[%s | OpenCV][%6d][%.02f s] %s/%s' % (
                                 str(device), abs_idx, t1 - t0, meta.dir, meta.name))
-                    if len(tasks) > args.task_queue_depth * args.num_workers:
-                        tasks = wait_to_complete(tasks)
+                    tasks = maybe_wait(tasks)
     print('{}: DONE'.format(device))
 
 
@@ -236,14 +238,14 @@ if __name__ == '__main__':
     if len(gpus) > 1:
         num_samples_per_gpu = (end - start) // len(gpus)
         jobs = []
-        with futures.ProcessPoolExecutor(len(gpus)) as ex:
+        with fut.ProcessPoolExecutor(len(gpus)) as ex:
             for i, gpu in enumerate(gpus):
                 job = ex.submit(proc_fn,
                     start=(start + num_samples_per_gpu * i), 
                     end=(start + num_samples_per_gpu * (i+1)), 
                     gpu=gpu)
                 jobs.append(job)
-            futures.wait(jobs)
+            fut.wait(jobs)
         for job in jobs:
             _ = job.result()
     else:
