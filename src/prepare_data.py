@@ -216,12 +216,12 @@ if __name__ == '__main__':
 
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
-    chunk_dirs = args.chunks.split(',')
-    if len(chunk_dirs) > 0:
-        chunk_dirs = [f'dfdc_train_part_{i}' for i in chunk_dirs]
+    if len(args.chunks) > 0:
+        chunk_dirs = [f'dfdc_train_part_{i}' for i in args.chunks.split(',')]
         mkdirs(args.save_dir, chunk_dirs)
     else:
         chunk_dirs = None
+
 
     print('reading from %s' % args.data_dir)
     print('saving to %s' % args.save_dir)
