@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from functools import partial
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Optional
 
 import cv2
 import numpy as np
@@ -70,7 +70,7 @@ def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
 
 def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0', 
                  args: Dict[str, any]=None) -> None:
-    df = read_labels(args.data_dir, chunk_dirs=chunk_dirs)
+    df = read_labels(args.data_dir, chunk_dirs=chunk_dirs, label=args.label)
     seq_len = args.num_frames // args.num_pass
     device = torch.device('cuda:{}'.format(gpu))
     cfg = detector_cfg(args)
@@ -101,6 +101,9 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
         for start_pos in range(start, end, args.max_open_files):
             end_pos = min(start_pos + args.max_open_files, end)
             files = get_file_list(df, start_pos, end_pos, args.data_dir)
+            if not len(files):
+                print('No files was read by {}'.format(device))
+                break
             write_file_list(files, path=file_list_path)
             pipe = VideoPipe(file_list_path, seq_len=seq_len, 
                              stride=args.stride, device_id=int(gpu))
@@ -165,8 +168,8 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
     print('{}: DONE'.format(device))
 
 
-def sizeof(data_dir: str, chunk_dirs: List[str]):
-    df = read_labels(data_dir, chunk_dirs=chunk_dirs)
+def sizeof(data_dir: str, chunk_dirs: List[str], label: Optional[int]=None) -> int:
+    df = read_labels(data_dir, chunk_dirs=chunk_dirs, label=label)
     return len(df)
 
 
@@ -175,6 +178,8 @@ def parse_args() -> Dict[str, any]:
     parser.add_argument('--start', type=int, default=0, help='start index')
     parser.add_argument('--end', type=int, default=None, help='end index')
     parser.add_argument('--chunks', type=str, default='')
+    parser.add_argument('--label', type=int, default=None, 
+                        help='filter videos by label')
     parser.add_argument('--max_open_files', type=int, default=300, 
                         help='maximum open files to open with DALI pipe')
     parser.add_argument('--num_frames', type=int, default=30, 
@@ -224,6 +229,9 @@ if __name__ == '__main__':
 
 
     print('reading from %s' % args.data_dir)
+    if args.label is not None:
+        label_str = 'fake' if args.label else 'real'
+        print('reading only %s videos' % label_str)
     print('saving to %s' % args.save_dir)
     print('DALI settings:\n'
           '  max simultaneosly open files: %d\n'
@@ -233,7 +241,7 @@ if __name__ == '__main__':
 
     start, end = args.start, args.end
     if not end:
-        end = sizeof(args.data_dir, chunk_dirs)
+        end = sizeof(args.data_dir, chunk_dirs, args.label)
 
     if len(gpus) > 1:
         num_samples_per_gpu = (end - start) // len(gpus)

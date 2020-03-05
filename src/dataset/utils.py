@@ -3,8 +3,11 @@ import os
 import numpy as np
 import pandas as pd
 
+from typing import List, Optional, Union
 
-def read_labels(base_path, chunk_dirs=None):
+
+def read_labels(base_path: str, chunk_dirs: Optional[List[str]]=None, 
+                label: Optional[int]=None) -> pd.DataFrame:
     if not os.path.isdir(base_path):
         raise ValueError('Invalid data dir')
     if not chunk_dirs:
@@ -16,5 +19,8 @@ def read_labels(base_path, chunk_dirs=None):
         df['dir'] = dir_name
         df['label'] = (df['label'] == 'FAKE').astype(np.uint8)
         df.drop(['split'], axis=1, inplace=True)
+        if label is not None:
+            mask = df['label'] == label
+            df = df[mask]
         labels.append(df)
     return pd.concat(labels)
