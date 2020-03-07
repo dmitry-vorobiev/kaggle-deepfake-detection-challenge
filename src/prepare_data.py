@@ -64,7 +64,14 @@ def max_num_faces(face_counts: np.ndarray, uniq_frac_thresh: float) -> int:
 
 def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
     cfg = cfg_mnet if args.det_encoder == 'mnet' else cfg_re50
-    cfg = {**cfg, 'batch_size': args.batch_size}
+    cfg = {
+        **cfg, 
+        'batch_size': args.batch_size,
+        'score_thresh': args.score_thresh,
+        'nms_thresh': args.nms_thresh,
+        'top_k': args.top_k,
+        'keep_top_k': args.keep_top_k
+    }
     return cfg   
 
 
@@ -206,11 +213,23 @@ def parse_args() -> Dict[str, any]:
                         help='num subproc per each GPU')
     parser.add_argument('--task_queue_depth', type=int, default=20, 
                         help='limit the amount of unfinished tasks per each worker')
+    parser.add_argument('--score_thresh', type=float, default=0.5, 
+                        help='filter out detector proposals by confidence threshold')
+    parser.add_argument('--nms_thresh', type=float, default=0.4, 
+                        help='filter out overlapping proposals by area of intersection')
+    parser.add_argument('--top_k', type=int, default=5000, 
+                        help='max number of initial proposal')
+    parser.add_argument('--keep_top_k', type=int, default=5, 
+                        help='hard limit number of predictions')
     parser.add_argument('--max_face_num_thresh', type=float, default=0.25,
                         help='cut detections based on the frequency encoding')
     parser.add_argument('--img_format', type=str, default='png', 
                         choices=['png', 'webp'])
-    parser.add_argument('--pack', action='store_true', help='pack images into hdf5')
+    parser.add_argument('--pack', action='store_true', 
+                        help='pack images into hdf5')
+
+
+    # score_thresh=0.75, nms_thresh=0.4, top_k=500, keep_top_k=5
     args = parser.parse_args()
     args.verbose = not args.silent
     args.file_list_path = './temp'
