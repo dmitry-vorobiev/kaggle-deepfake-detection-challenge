@@ -20,28 +20,40 @@ def mkdirs(base_dir: str, chunk_dirs: List[str]) -> None:
 
 def dump_to_disk(images: List[np.ndarray], dir_path: str, 
                  filename: str, img_format: str, 
-                 append=False) -> None:
+                 pack=False) -> None:
     if not os.path.isdir(dir_path):
         os.mkdir(dir_path)
     if len(images) > 0:
-        file_path = os.path.join(dir_path, filename+'.h5')
-        write_hdf5(file_path, images, img_format, append=append)
+        if pack:
+            file_path = os.path.join(dir_path, filename+'.h5')
+            write_hdf5(file_path, images, img_format)
+        else:
+            path = os.path.join(dir_path, filename)
+            write_images(path, images, img_format)
     else:
         print('No frames found %s/%s.mp4' % (dir_path, filename))
 
 
+def write_images(dir_path: str, images: List[np.ndarray], img_format: str) -> None:
+    img_opts = FORMAT_OPTIONS[img_format]
+    if not os.path.exists(dir_path):
+        os.mkdir(dir_path)
+    for i, image in enumerate(images):
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        path = os.path.join(dir_path, '%03d.%s' % (i, img_format))
+        cv2.imwrite(path, image, img_opts)   
+
+
 def write_hdf5(path: str, images: List[np.ndarray], img_format: str,
-               append=False, hdf5_opts=dict(compression=3, shuffle=True)) -> None:
-    mode = 'a' if append else 'w'
+               hdf5_opts=dict(compression=None, shuffle=False)) -> None:
     img_ext = '.' + img_format
     img_opts = FORMAT_OPTIONS[img_format]
-    with h5py.File(path, mode) as file:
-        offset = len(file) if append else 0
+    with h5py.File(path, 'w') as file:
         for i, image in enumerate(images):
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             img_bytes = cv2.imencode(img_ext, image, img_opts)[1]
             dataset = file.create_dataset(
-                '%03d' % (i + offset), data=img_bytes, **hdf5_opts)
+                '%03d' % i, data=img_bytes, **hdf5_opts)
 
 
 def read_hdf5(path: str, num_frames=30) -> List[np.ndarray]:
