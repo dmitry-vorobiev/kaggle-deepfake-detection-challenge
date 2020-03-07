@@ -56,9 +56,9 @@ def find_faces(frames: np.ndarray, detect_fn: Callable,
     return faces
 
 
-def max_num_faces(num_faces_per_frame: np.ndarray, uniq_frac_thresh: float) -> int:
-    uniq_vals, uniq_freq = np.unique(num_faces_per_frame, return_counts=True)
-    mask = uniq_freq / len(num_faces_per_frame) > uniq_frac_thresh
+def max_num_faces(face_counts: np.ndarray, uniq_frac_thresh: float) -> int:
+    uniq_vals, uniq_freq = np.unique(face_counts, return_counts=True)
+    mask = uniq_freq / len(face_counts) > uniq_frac_thresh
     return uniq_vals[mask].max()
 
 
@@ -79,12 +79,18 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
     file_list_path = '{}_{}'.format(args.file_list_path, gpu)
     tasks = []
 
-    def save(images: List[np.ndarray], meta: pd.Series, append=False) -> None:
+    def save(images: List[np.ndarray], idx: int, t0: int, pipe_name: str) -> int:
+        meta = df.iloc[idx]
         dir_path = os.path.join(args.save_dir, meta.dir)
         task = subproc.submit(
             dump_to_disk, images, dir_path, meta.name[:-4], 
-            args.img_format, append=append)
+            args.img_format)
         tasks.append(task)
+        if args.verbose:
+            t1 = time.time()
+            print('[%s | %s][%6d][%.02f s] %s/%s' % (
+                str(device), pipe_name, idx, t1 - t0, meta.dir, meta.name))
+        return t1
 
     def maybe_wait(tasks: List[fut.Future]) -> List[fut.Future]:
         nw = args.num_workers
@@ -122,27 +128,27 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
                 if args.verbose: 
                     t0 = time.time()
                 prev_idx = None
+                faces = []
+
                 for video_batch in data_iter:
                     frames = video_batch[0]['frames'].squeeze(0)
                     read_idx =  video_batch[0]['label'].item()
-                    faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
+                    new_faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
                     video_batch, frames = None, None
-                    abs_idx = start_pos + read_idx
-                    meta = df.iloc[abs_idx]
-                    append = prev_idx == read_idx
-                    save(faces, meta, append=append)
+                    
+                    if prev_idx is None or prev_idx == read_idx:
+                        faces += new_faces
+                    else:
+                        t0 = save(faces, start_pos + prev_idx, t0, 'DALI')
+                        faces = new_faces
                     prev_idx = read_idx
                     if run_fallback_reader:
                         proc_file_idxs[read_idx] = True
-                    if args.verbose:
-                        t1 = time.time()
-                        print('[%s | DALI][%6d][%.02f s] %s/%s' % (
-                            str(device), abs_idx, t1 - t0, meta.dir, meta.name))
-                        t0 = t1
                     tasks = maybe_wait(tasks)
+                save(faces, start_pos + prev_idx, t0, 'DALI') # last video
+
             pipe, data_iter = None, None
             gc.collect()
-            tasks = maybe_wait(tasks)
             
             if run_fallback_reader:
                 unproc_file_idxs = (~proc_file_idxs).nonzero()[0]
@@ -157,13 +163,7 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
                     frames = read_frames_cv2(files[idx], args.num_frames)
                     if frames is not None:
                         faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
-                        abs_idx = start_pos + idx
-                        meta = df.iloc[abs_idx]
-                        save(faces, meta, append=False)
-                        if args.verbose:
-                            t1 = time.time()
-                            print('[%s | OpenCV][%6d][%.02f s] %s/%s' % (
-                                str(device), abs_idx, t1 - t0, meta.dir, meta.name))
+                        t0 = save(faces, start_pos + idx, t0, 'OpenCV')
                     tasks = maybe_wait(tasks)
     print('{}: DONE'.format(device))
 
@@ -242,6 +242,7 @@ if __name__ == '__main__':
     start, end = args.start, args.end
     if not end:
         end = sizeof(args.data_dir, chunk_dirs, args.label)
+    print('total number of videos: %d' % (end - start))
 
     if len(gpus) > 1:
         num_samples_per_gpu = (end - start) // len(gpus)
