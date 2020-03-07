@@ -1,10 +1,11 @@
 import math
 import numba
 import numpy as np
+from functools import partial
+from typing import Dict, List, Tuple, Union
 
 import torch
 from torch import Tensor
-from typing import Dict, List, Tuple, Union
 
 from layers.functions.prior_box import PriorBox
 from models.retinaface import RetinaFace
@@ -74,8 +75,12 @@ def postproc_detections(
     boxes = boxes.cpu().numpy()
     scores = confidence.cpu().numpy()[:, :, 1]
     num_frames = scores.shape[0]
-    dets = [postproc_frame(boxes[i], scores[i]) 
-            for i in range(num_frames)]
+    proc_fn = partial(postproc_frame, 
+        score_thresh=cfg['score_thresh'], 
+        nms_thresh=cfg['nms_thresh'], 
+        top_k=cfg['top_k'], 
+        keep_top_k=cfg['keep_top_k'])
+    dets = [proc_fn(boxes[i], scores[i]) for i in range(num_frames)]
     return dets
 
 
