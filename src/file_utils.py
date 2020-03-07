@@ -26,7 +26,7 @@ def dump_to_disk(images: List[np.ndarray], dir_path: str,
     if len(images) > 0:
         if pack:
             file_path = os.path.join(dir_path, filename+'.h5')
-            write_hdf5(file_path, images, img_format, append=False)
+            write_hdf5(file_path, images, img_format)
         else:
             path = os.path.join(dir_path, filename)
             write_images(path, images, img_format)
@@ -45,17 +45,15 @@ def write_images(dir_path: str, images: List[np.ndarray], img_format: str) -> No
 
 
 def write_hdf5(path: str, images: List[np.ndarray], img_format: str,
-               append=False, hdf5_opts=dict(compression=3, shuffle=True)) -> None:
-    mode = 'a' if append else 'w'
+               hdf5_opts=dict(compression=None, shuffle=False)) -> None:
     img_ext = '.' + img_format
     img_opts = FORMAT_OPTIONS[img_format]
-    with h5py.File(path, mode) as file:
-        offset = len(file) if append else 0
+    with h5py.File(path, 'w') as file:
         for i, image in enumerate(images):
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             img_bytes = cv2.imencode(img_ext, image, img_opts)[1]
             dataset = file.create_dataset(
-                '%03d' % (i + offset), data=img_bytes, **hdf5_opts)
+                '%03d' % i, data=img_bytes, **hdf5_opts)
 
 
 def read_hdf5(path: str, num_frames=30) -> List[np.ndarray]:

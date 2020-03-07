@@ -82,8 +82,9 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
     def save(images: List[np.ndarray], idx: int, t0: int, pipe_name: str) -> int:
         meta = df.iloc[idx]
         dir_path = os.path.join(args.save_dir, meta.dir)
+        file_name = '%s_%d' % (meta.name[:-4], int(meta.label))
         task = subproc.submit(
-            dump_to_disk, images, dir_path, meta.name[:-4], 
+            dump_to_disk, images, dir_path, file_name, 
             args.img_format, pack=args.pack)
         tasks.append(task)
         if args.verbose:
