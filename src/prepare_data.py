@@ -84,7 +84,7 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
         dir_path = os.path.join(args.save_dir, meta.dir)
         task = subproc.submit(
             dump_to_disk, images, dir_path, meta.name[:-4], 
-            args.img_format)
+            args.img_format, pack=args.pack)
         tasks.append(task)
         if args.verbose:
             t1 = time.time()
@@ -209,6 +209,7 @@ def parse_args() -> Dict[str, any]:
                         help='cut detections based on the frequency encoding')
     parser.add_argument('--img_format', type=str, default='png', 
                         choices=['png', 'webp'])
+    parser.add_argument('--pack', action='store_true', help='pack images into hdf5')
     args = parser.parse_args()
     args.verbose = not args.silent
     args.file_list_path = './temp'
@@ -233,6 +234,8 @@ if __name__ == '__main__':
         label_str = 'fake' if args.label else 'real'
         print('reading only %s videos' % label_str)
     print('saving to %s' % args.save_dir)
+    if args.pack:
+        print('packing into hdf5')
     print('DALI settings:\n'
           '  max simultaneosly open files: %d\n'
           '  num pass per video: %d' % (args.max_open_files, args.num_pass))
