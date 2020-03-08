@@ -16,7 +16,7 @@ import torch
 from torch import Tensor
 
 # TODO: make proper setup.py
-sys.path.insert(0, '/home/dmitry/projects/dfdc/vendors/Pytorch_Retinaface')
+sys.path.insert(0, f'/home/{os.environ["USER"]}/projects/dfdc/vendors/Pytorch_Retinaface')
 from data import cfg_mnet, cfg_re50
 
 from dataset.utils import read_labels
