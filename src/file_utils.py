@@ -31,7 +31,7 @@ def dump_to_disk(images: List[np.ndarray], dir_path: str,
     if len(images) > 0:
         if pack:
             file_path = os.path.join(dir_path, filename+'.h5')
-            write_hdf5(file_path, images, img_format)
+            write_hdf5(file_path, images, img_format, scale, lossy)
         else:
             path = os.path.join(dir_path, filename)
             write_images(path, images, img_format, scale, lossy)
@@ -57,22 +57,26 @@ def write_images(dir_path: str, images: List[np.ndarray],
     if not os.path.exists(dir_path):
         os.mkdir(dir_path)
     for i, image in enumerate(images):
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         image = resize(image, scale)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         path = os.path.join(dir_path, '%03d.%s' % (i, img_format))
         cv2.imwrite(path, image, img_opts)   
 
 
 def write_hdf5(path: str, images: List[np.ndarray], img_format: str,
-               hdf5_opts=dict(compression=None, shuffle=False)) -> None:
+               scale: float, lossy: bool) -> None:
     img_ext = '.' + img_format
-    img_opts = LOSSLESS_OPTIONS[img_format]
+    if lossy:
+        img_opts = LOSSY_OPTIONS[img_format]
+    else:
+        img_opts = LOSSLESS_OPTIONS[img_format]
     with h5py.File(path, 'w') as file:
         for i, image in enumerate(images):
+            image = resize(image, scale)
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             img_bytes = cv2.imencode(img_ext, image, img_opts)[1]
             dataset = file.create_dataset(
-                '%03d' % i, data=img_bytes, **hdf5_opts)
+                '%03d' % i, data=img_bytes, compression=None, shuffle=False)
 
 
 def read_hdf5(path: str, num_frames=30) -> List[np.ndarray]:
