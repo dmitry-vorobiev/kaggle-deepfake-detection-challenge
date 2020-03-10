@@ -91,8 +91,8 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
         dir_path = os.path.join(args.save_dir, meta.dir)
         file_name = '%s_%d' % (meta.name[:-4], int(meta.label))
         task = subproc.submit(
-            dump_to_disk, images, dir_path, file_name, 
-            args.img_format, pack=args.pack)
+            dump_to_disk, images, dir_path, file_name, args.img_format, 
+            scale=args.img_scale, pack=args.pack, lossy=args.lossy)
         tasks.append(task)
         if args.verbose:
             t1 = time.time()
@@ -213,26 +213,32 @@ def parse_args() -> Dict[str, any]:
                         help='num subproc per each GPU')
     parser.add_argument('--task_queue_depth', type=int, default=20, 
                         help='limit the amount of unfinished tasks per each worker')
-    parser.add_argument('--score_thresh', type=float, default=0.5, 
+    parser.add_argument('--score_thresh', type=float, default=0.75, 
                         help='filter out detector proposals by confidence threshold')
     parser.add_argument('--nms_thresh', type=float, default=0.4, 
                         help='filter out overlapping proposals by area of intersection')
-    parser.add_argument('--top_k', type=int, default=5000, 
+    parser.add_argument('--top_k', type=int, default=500, 
                         help='max number of initial proposal')
     parser.add_argument('--keep_top_k', type=int, default=5, 
                         help='hard limit number of predictions')
     parser.add_argument('--max_face_num_thresh', type=float, default=0.25,
                         help='cut detections based on the frequency encoding')
     parser.add_argument('--img_format', type=str, default='png', 
-                        choices=['png', 'webp'])
+                        choices=['png', 'webp', 'jpeg'])
+    parser.add_argument('--img_scale', type=float, default=1.0, 
+                        help='resize images before saving to disk')
     parser.add_argument('--pack', action='store_true', 
                         help='pack images into hdf5')
+    parser.add_argument('--lossy', action='store_true', 
+                        help='use lossy compression')
 
-
-    # score_thresh=0.75, nms_thresh=0.4, top_k=500, keep_top_k=5
     args = parser.parse_args()
     args.verbose = not args.silent
     args.file_list_path = './temp'
+    if args.lossy and args.img_format == 'png':
+        raise AttributeError('Incompatible params: --img_format png --lossy')
+    if args.img_format == 'jpeg':
+        args.lossy = True
     return args
 
 

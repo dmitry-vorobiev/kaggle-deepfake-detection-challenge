@@ -5,9 +5,14 @@ import cv2
 import h5py
 import numpy as np
 
-FORMAT_OPTIONS = {
+LOSSLESS_OPTIONS = {
     'png': [cv2.IMWRITE_PNG_COMPRESSION, 5],
     'webp': None
+}
+
+LOSSY_OPTIONS = {
+    'webp': [cv2.IMWRITE_WEBP_QUALITY, 100],
+    'jpeg': [cv2.IMWRITE_JPEG_QUALITY, 100],
 }
 
 
@@ -19,8 +24,8 @@ def mkdirs(base_dir: str, chunk_dirs: List[str]) -> None:
 
 
 def dump_to_disk(images: List[np.ndarray], dir_path: str, 
-                 filename: str, img_format: str, 
-                 pack=False) -> None:
+                 filename: str, img_format: str, scale=1.,
+                 pack=False, lossy=False) -> None:
     if not os.path.isdir(dir_path):
         os.mkdir(dir_path)
     if len(images) > 0:
@@ -29,17 +34,31 @@ def dump_to_disk(images: List[np.ndarray], dir_path: str,
             write_hdf5(file_path, images, img_format)
         else:
             path = os.path.join(dir_path, filename)
-            write_images(path, images, img_format)
+            write_images(path, images, img_format, scale, lossy)
     else:
         print('No frames found %s/%s.mp4' % (dir_path, filename))
 
 
-def write_images(dir_path: str, images: List[np.ndarray], img_format: str) -> None:
-    img_opts = FORMAT_OPTIONS[img_format]
+def resize(image: np.ndarray, scale: float) -> np.ndarray:
+    if scale != 1.0:
+        H, W, C = image.shape
+        H = int(H * scale)
+        W = int(W * scale)
+        image = cv2.resize(image, (W, H), interpolation=cv2.INTER_AREA)
+    return image
+
+
+def write_images(dir_path: str, images: List[np.ndarray], 
+                 img_format: str, scale: float, lossy: bool) -> None:
+    if lossy:
+        img_opts = LOSSY_OPTIONS[img_format]
+    else:
+        img_opts = LOSSLESS_OPTIONS[img_format]
     if not os.path.exists(dir_path):
         os.mkdir(dir_path)
     for i, image in enumerate(images):
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        image = resize(image, scale)
         path = os.path.join(dir_path, '%03d.%s' % (i, img_format))
         cv2.imwrite(path, image, img_opts)   
 
@@ -47,7 +66,7 @@ def write_images(dir_path: str, images: List[np.ndarray], img_format: str) -> No
 def write_hdf5(path: str, images: List[np.ndarray], img_format: str,
                hdf5_opts=dict(compression=None, shuffle=False)) -> None:
     img_ext = '.' + img_format
-    img_opts = FORMAT_OPTIONS[img_format]
+    img_opts = LOSSLESS_OPTIONS[img_format]
     with h5py.File(path, 'w') as file:
         for i, image in enumerate(images):
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
