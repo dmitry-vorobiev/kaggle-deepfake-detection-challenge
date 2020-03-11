@@ -1,8 +1,6 @@
-import os
-
 import numpy as np
+import os
 import pandas as pd
-
 from typing import List, Optional, Union
 
 
@@ -24,3 +22,16 @@ def read_labels(base_path: str, chunk_dirs: Optional[List[str]]=None,
             df = df[mask]
         labels.append(df)
     return pd.concat(labels)
+
+
+def create_mask(idxs: np.ndarray, total: int) -> np.ndarray:
+    mask = np.zeros(total, dtype=np.bool)
+    mask[idxs] = 1
+    return mask
+
+
+def pad(frames: np.ndarray, amount: int, where :str='start') -> np.ndarray:
+    dims = np.zeros((frames.ndim, 2), dtype=np.int8)
+    pad_dim = 1 if where == 'end' else 0
+    dims[0, pad_dim] = amount
+    return np.pad(frames, dims, 'constant')
