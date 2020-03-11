@@ -4,20 +4,24 @@ import numpy as np
 import os
 import pandas as pd
 import torch
+from torch import FloatTensor
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from .sample import FrameSampler
-from .utils import create_mask, pad
+from .utils import create_mask, pad_torch
 
 
 class HDF5Dataset(torch.utils.data.Dataset):
     def __init__(self, base_path: str, size: Tuple[int, int], 
-                 sampler: FrameSampler,
-                 sub_dirs: Optional[List[str]]=None):        
+                 sampler: FrameSampler, 
+                 x_tfms: Callable[[np.ndarray], FloatTensor],
+                 sub_dirs: Optional[List[str]]=None):
+        super(HDF5Dataset, self).__init__()    
         self.base_path = base_path
         self.size = size
         self.sampler = sampler
+        self.x_tfms = x_tfms
         self.df = HDF5Dataset._read_annotations(base_path, sub_dirs)
         
     @staticmethod
@@ -77,9 +81,7 @@ class HDF5Dataset(torch.utils.data.Dataset):
                     key = '%03d' % i
                     img = HDF5Dataset._proc_image(file[key], img_size)
                     images.append(img)
-                return np.stack(images)
-            else:
-                return np.empty((0, size, size, 3), dtype=np.uint8)
+        return images
     
     @staticmethod
     def _proc_image(img: h5py.Dataset, 
@@ -106,13 +108,16 @@ class HDF5Dataset(torch.utils.data.Dataset):
                 path, num_frames, size, sample_fn=sample_fn)
         else:
             print('Unable to read {}'.format(path))
-            frames = np.zeros((num_frames, size, size, 3), dtype=np.uint8)
-        
+            frames = []
+
         if len(frames) > 0:
+            if self.x_tfms:
+                frames = [self.x_tfms(frame) for frame in frames]
+            frames = torch.stack(frames)
             pad_amount = num_frames - len(frames)
             if pad_amount > 0:
-                frames = pad(frames, pad_amount, 'start')
+                frames = pad_torch(frames, pad_amount, 'start')
         else:
             print('Empty file {}'.format(path))
-            frames = np.zeros((num_frames, size, size, 3), dtype=np.uint8)
+            frames =  torch.zeros((num_frames, 3, size, size), dtype=torch.float32)
         return frames, label

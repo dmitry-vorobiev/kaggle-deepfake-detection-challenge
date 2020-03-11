@@ -7,3 +7,5 @@ data/*
 vendors/*
 
 temp*
+
+notebooks/logs

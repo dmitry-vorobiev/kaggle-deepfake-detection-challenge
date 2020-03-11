@@ -1,5 +1,6 @@
 import torch
 from torch import Tensor
+from typing import Tuple
 
 
 def identity(x: Tensor) -> Tensor:

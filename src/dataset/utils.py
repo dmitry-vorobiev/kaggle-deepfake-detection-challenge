@@ -1,6 +1,8 @@
 import numpy as np
 import os
 import pandas as pd
+import torch
+import torch.nn.functional as F
 from typing import List, Optional, Union
 
 
@@ -30,8 +32,17 @@ def create_mask(idxs: np.ndarray, total: int) -> np.ndarray:
     return mask
 
 
-def pad(frames: np.ndarray, amount: int, where :str='start') -> np.ndarray:
+def pad(frames: np.ndarray, amount: int, where='start') -> np.ndarray:
     dims = np.zeros((frames.ndim, 2), dtype=np.int8)
     pad_dim = 1 if where == 'end' else 0
     dims[0, pad_dim] = amount
     return np.pad(frames, dims, 'constant')
+
+
+def pad_torch(frames: torch.IntTensor, amount: int, where='start') -> torch.IntTensor:
+    pad = tuple([0] * 8)
+    if where == 'start':
+        pad[7] = amount
+    else:
+        pad[8] = amount
+    return F.pad(frames, pad)
