@@ -1,5 +1,5 @@
 import torch
-from torch import Tensor
+from torch import Tensor, FloatTensor, LongTensor
 from typing import Tuple
 
 
@@ -7,7 +7,7 @@ def identity(x: Tensor) -> Tensor:
     return x
 
 
-def pool_gru(out_gru: Tuple[Tensor, Tensor]) -> Tensor:
+def pool_gru(out_gru: Tuple[FloatTensor, FloatTensor]) -> FloatTensor:
     out, _ = out_gru
     out_avg = torch.mean(out, dim=1)
     out_max, _ = torch.max(out, dim=1)
@@ -33,7 +33,7 @@ def select(h: Tensor, y: Tensor) -> Tensor:
     return h
 
 
-def act(h: Tensor, y: Tensor) -> Tensor:
+def act(h: FloatTensor, y: LongTensor) -> FloatTensor:
     N = y.size(0)
     dims = [1] * (h.ndim-1)
     y = y.reshape(N, *dims)

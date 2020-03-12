@@ -1,11 +1,13 @@
 import math
 import torch
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor, LongTensor
 from typing import Callable, Tuple, Union
 
 from .autoencoder import Autoencoder
 from .layers import conv3D, Lambda
 from .ops import identity, pool_gru
+
+DetectorOut = Tuple[FloatTensor, FloatTensor, FloatTensor]
 
 
 class FakeDetector(nn.Module):
@@ -63,14 +65,14 @@ class FakeDetector(nn.Module):
             print('Using avg pooling: {} -> {}'.format(in_dim, out_dim))
             return nn.AdaptiveAvgPool3d(out_dim)
     
-    def forward(self, x: Tensor, y: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+    def forward(self, x: FloatTensor, y: LongTensor) -> DetectorOut:
         N, N_fr, C, H, W = x.shape
         hidden, xs_hat = [], []
         
         for f in range(N_fr):
-            h, x_hat = self.autoenc(x[:,f], y)
-            hidden.append(h[:,None])
-            xs_hat.append(x_hat[:,None])
+            h, x_hat = self.autoenc(x[:, f], y)
+            hidden.append(h[:, None])
+            xs_hat.append(x_hat[:, None])
             
         hidden = torch.cat(hidden, dim=1)
         xs_hat = torch.cat(xs_hat, dim=1)

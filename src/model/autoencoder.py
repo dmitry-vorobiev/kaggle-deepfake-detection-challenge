@@ -1,7 +1,7 @@
 
 import torch.nn.functional as F
 from functools import partial
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor, LongTensor
 from typing import Tuple
 
 from .ops import select
@@ -61,7 +61,7 @@ class Autoencoder(nn.Module):
         last = nn.Conv2d(size, out_ch, 3, stride=1, padding=pad)
         return nn.Sequential(*main, last, nn.Tanh())
         
-    def forward(self, x, y) -> Tuple[Tensor, Tensor]:
+    def forward(self, x: FloatTensor, y: LongTensor) -> Tuple[FloatTensor, FloatTensor]:
         h = self.encoder(x)
         hc = select(h, y)
         x_hat = self.decoder(hc)

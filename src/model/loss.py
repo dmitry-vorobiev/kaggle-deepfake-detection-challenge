@@ -3,28 +3,30 @@ import torch.nn.functional as F
 from torch import FloatTensor, LongTensor
 from typing import Tuple
 
+from .detector import DetectorOut
 from .ops import act
 
 
-def zeros(n: int) -> LongTensor:
-    return torch.zeros(n, dtype=torch.int64)
+def zeros(n: int, device: torch.device) -> LongTensor:
+    return torch.zeros(n, dtype=torch.int64, device=device)
 
 
-def ones(n: int) -> LongTensor:
-    return torch.ones(n, dtype=torch.int64)
+def ones(n: int, device: torch.device) -> LongTensor:
+    return torch.ones(n, dtype=torch.int64, device=device)
 
 
 def act_loss(x: FloatTensor, y: LongTensor) -> FloatTensor:
+    device = x.device
     pos = y.nonzero().reshape(-1)
     neg = (y - 1).nonzero().reshape(-1)
     x0, x1 = x[neg], x[pos]
     n0, n1 = x0.size(0), x1.size(0)
     
-    a0_x0 = act(x0, zeros(n0))
-    a1_x0 = act(x0, ones(n0))
+    a0_x0 = act(x0, zeros(n0, device))
+    a1_x0 = act(x0, ones(n0, device))
     
-    a1_x1 = act(x1, ones(n1))
-    a0_x1 = act(x1, zeros(n1))
+    a1_x1 = act(x1, ones(n1, device))
+    a0_x1 = act(x1, zeros(n1, device))
     
     neg_loss = (a0_x0 - 1).abs() + a1_x0
     pos_loss = (a1_x1 - 1).abs() + a0_x1
@@ -32,8 +34,7 @@ def act_loss(x: FloatTensor, y: LongTensor) -> FloatTensor:
     return (neg_loss.sum() + pos_loss.sum()) / y.size(0)
 
 
-def combined_loss(out: Tuple[FloatTensor, FloatTensor, FloatTensor], 
-                  x: FloatTensor, y: LongTensor) -> FloatTensor:
+def combined_loss(out: DetectorOut, x: FloatTensor, y: LongTensor) -> FloatTensor:
     h, x_hat, y_hat = out
     
     loss1 = act_loss(h, y)
