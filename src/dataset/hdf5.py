@@ -119,5 +119,6 @@ class HDF5Dataset(torch.utils.data.Dataset):
                 frames = pad_torch(frames, pad_amount, 'start')
         else:
             print('Empty file {}'.format(path))
-            frames =  torch.zeros((num_frames, 3, size, size), dtype=torch.float32)
+            frames =  torch.zeros((num_frames, 3, size, size), 
+                                  dtype=torch.float32)
         return frames, label
