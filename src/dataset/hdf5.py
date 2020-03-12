@@ -88,9 +88,8 @@ class HDF5Dataset(torch.utils.data.Dataset):
             frames = []
 
         if len(frames) > 0:
-            if self.x_tfms:
-                frames = list(map(self.x_tfms, frames))
-            frames = torch.stack(frames)
+            tfms = self.x_tfms or torch.from_numpy
+            frames = torch.stack(list(map(tfms, frames)))
             pad_amount = num_frames - len(frames)
             if pad_amount > 0:
                 frames = pad_torch(frames, pad_amount, 'start')
