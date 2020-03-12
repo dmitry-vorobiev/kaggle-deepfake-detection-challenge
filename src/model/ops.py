@@ -22,23 +22,27 @@ def pool_lstm(out_lstm: Tuple[Tensor, Tuple[Tensor, Tensor]]) -> Tensor:
     return torch.cat([out_avg, out_max, out_h], dim=1)
 
 
+def reshape_as(y: Tensor, h: Tensor) -> Tensor:
+    N = y.size(0)
+    dims = [1] * (h.ndim-1)
+    y = y.reshape(N, *dims)
+    return y
+
+
 def select(h: Tensor, y: Tensor) -> Tensor:
-    N, C, H, W = h.shape
-    y = y.reshape(N, 1, 1, 1)
-    
-    h0, h1 = h.chunk(2, dim=1)
-    h0 = h0 * (1 - y)
-    h1 = h1 * y
-    h = torch.cat([h0, h1], dim=1)
+    C = h.size(1)
+    C_mid = C // 2
+    y = reshape_as(y, h)
+    h = h.clone()
+    h[:, 0:C_mid] *= (1 - y)
+    h[:, C_mid:C] *= y
     return h
 
 
 def act(h: FloatTensor, y: LongTensor) -> FloatTensor:
     N = y.size(0)
-    dims = [1] * (h.ndim-1)
-    y = y.reshape(N, *dims)
-    
-    h0, h1 = h.chunk(2, dim=-3)
+    y = reshape_as(y, h)
+    h0, h1 = h.chunk(2, dim=1)
     a = h0 * (1 - y) + h1 * y
     n_el = a.numel() / max(N, 1)
     a = a.abs().sum(tuple(range(1, a.ndim))) / n_el

@@ -54,8 +54,7 @@ class FakeDetector(nn.Module):
             n = int(n)
             print('Using Conv3D pooling: {} layers'.format(n))
             conv = [conv3D(emb_C, emb_C, stride=2) for _ in range(n)]
-            transp = Lambda(lambda x: x.transpose(2, 1))
-            return nn.Sequential(transp, *conv, transp)
+            return nn.Sequential(*conv)
         else:
             out_S = math.sqrt(seq_in / emb_S / enc_size)
             FakeDetector._validate(out_S)
@@ -66,18 +65,18 @@ class FakeDetector(nn.Module):
             return nn.AdaptiveAvgPool3d(out_dim)
     
     def forward(self, x: FloatTensor, y: LongTensor) -> DetectorOut:
-        N, N_fr, C, H, W = x.shape
+        N, C, D, H, W = x.shape
         hidden, xs_hat = [], []
         
-        for f in range(N_fr):
-            h, x_hat = self.autoenc(x[:, f], y)
-            hidden.append(h[:, None])
-            xs_hat.append(x_hat[:, None])
+        for f in range(D):
+            h, x_hat = self.autoenc(x[:, :, f], y)
+            hidden.append(h[:, :, None])
+            xs_hat.append(x_hat[:, :, None])
             
-        hidden = torch.cat(hidden, dim=1)
-        xs_hat = torch.cat(xs_hat, dim=1)
+        hidden = torch.cat(hidden, dim=2)
+        xs_hat = torch.cat(xs_hat, dim=2)
         
-        seq = self.pool(hidden).reshape(N, N_fr, -1)
+        seq = self.pool(hidden).reshape(N, D, -1)
         seq_out = self.seq_model(seq)
         seq_out = pool_gru(seq_out)
         y_hat = self.out(seq_out)

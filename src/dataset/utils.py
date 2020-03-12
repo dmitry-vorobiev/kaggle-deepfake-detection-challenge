@@ -40,9 +40,9 @@ def pad(frames: np.ndarray, amount: int, where='start') -> np.ndarray:
 
 
 def pad_torch(frames: torch.IntTensor, amount: int, where='start') -> torch.IntTensor:
-    pad = tuple([0] * 8)
+    pad = [0] * 8
     if where == 'start':
         pad[7] = amount
     else:
         pad[8] = amount
-    return F.pad(frames, pad)
+    return F.pad(frames, tuple(pad))

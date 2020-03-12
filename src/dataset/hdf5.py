@@ -4,7 +4,7 @@ import numpy as np
 import os
 import pandas as pd
 import torch
-from torch import FloatTensor
+from torch import FloatTensor, Tensor
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -47,29 +47,9 @@ class HDF5Dataset(torch.utils.data.Dataset):
         if len(parts) < 1:
             raise AttributeError('No files were found')
         return pd.concat(parts).reset_index()
-    
-    @staticmethod
-    def read_hdf5(path: str, num_frames: int, size: int,
-                  sample_fn: Callable[[int], np.ndarray]) -> np.ndarray:
-        img_size = (size, size)
-        images = []
-        with h5py.File(path, 'r') as file:
-            total_frames = len(file)
-            if total_frames > 0:
-                idxs = sample_fn(total_frames)
-                pick = create_mask(idxs, total_frames)
-                keys = iter(file.keys())
-                for i in range(idxs[-1] + 1):
-                    key = next(keys)
-                    if pick[i]:
-                        img = HDF5Dataset._proc_image(file[key], img_size)
-                        images.append(img)
-                return np.stack(images)
-            else:
-                return np.empty((0, size, size, 3), dtype=np.uint8)
 
     @staticmethod
-    def read_hdf5_alt(path: str, num_frames: int, size: int,
+    def read_hdf5(path: str, size: int,
                   sample_fn: Callable[[int], np.ndarray]) -> np.ndarray:
         img_size = (size, size)
         images = []
@@ -84,19 +64,17 @@ class HDF5Dataset(torch.utils.data.Dataset):
         return images
     
     @staticmethod
-    def _proc_image(img: h5py.Dataset, 
-                    img_size: Tuple[int, int]) -> np.ndarray:
+    def _proc_image(img: h5py.Dataset, img_size: Tuple[int, int]) -> np.ndarray:
         img = np.uint8(img)
         img = cv2.imdecode(img, cv2.IMREAD_COLOR)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, img_size, 
-                         interpolation=cv2.INTER_NEAREST)
+        img = cv2.resize(img, img_size, interpolation=cv2.INTER_NEAREST)
         return img
         
     def __len__(self) :
         return len(self.df)
     
-    def __getitem__(self, idx) -> Tuple[np.ndarray, int]:
+    def __getitem__(self, idx) -> Tuple[Tensor, int]:
         num_frames, size = self.size
         meta = self.df.iloc[idx]
         label = int(meta.label)
@@ -104,21 +82,21 @@ class HDF5Dataset(torch.utils.data.Dataset):
         
         if os.path.isfile(path):
             sample_fn = self.sampler(meta.label)
-            frames = HDF5Dataset.read_hdf5_alt(
-                path, num_frames, size, sample_fn=sample_fn)
+            frames = HDF5Dataset.read_hdf5(path, size, sample_fn=sample_fn)
         else:
             print('Unable to read {}'.format(path))
             frames = []
 
         if len(frames) > 0:
             if self.x_tfms:
-                frames = [self.x_tfms(frame) for frame in frames]
+                frames = list(map(self.x_tfms, frames))
             frames = torch.stack(frames)
             pad_amount = num_frames - len(frames)
             if pad_amount > 0:
                 frames = pad_torch(frames, pad_amount, 'start')
+            # D, C, H, W -> C, D, H, W
+            frames = frames.permute(1, 0, 2, 3)
         else:
             print('Empty file {}'.format(path))
-            frames =  torch.zeros((num_frames, 3, size, size), 
-                                  dtype=torch.float32)
+            frames = torch.zeros((3, num_frames, size, size), dtype=torch.float32)
         return frames, label
