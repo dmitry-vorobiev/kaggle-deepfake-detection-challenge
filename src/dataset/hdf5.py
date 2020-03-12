@@ -4,24 +4,26 @@ import numpy as np
 import os
 import pandas as pd
 import torch
-from torch import FloatTensor, Tensor
+from torch import Tensor
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from .sample import FrameSampler
-from .utils import create_mask, pad_torch
+from .utils import pad_torch
+
+Transforms = Callable[[np.ndarray], Tensor]
 
 
 class HDF5Dataset(torch.utils.data.Dataset):
     def __init__(self, base_path: str, size: Tuple[int, int], 
                  sampler: FrameSampler, 
-                 x_tfms: Callable[[np.ndarray], FloatTensor],
-                 sub_dirs: Optional[List[str]]=None):
-        super(HDF5Dataset, self).__init__()    
+                 transforms: Optional[Transforms] = None,
+                 sub_dirs: Optional[List[str]] = None):
+        super(HDF5Dataset, self).__init__()
         self.base_path = base_path
         self.size = size
         self.sampler = sampler
-        self.x_tfms = x_tfms
+        self.transforms = transforms
         self.df = HDF5Dataset._read_annotations(base_path, sub_dirs)
         
     @staticmethod
@@ -50,7 +52,7 @@ class HDF5Dataset(torch.utils.data.Dataset):
 
     @staticmethod
     def read_hdf5(path: str, size: int,
-                  sample_fn: Callable[[int], np.ndarray]) -> np.ndarray:
+                  sample_fn: Callable[[int], np.ndarray]) -> List[np.ndarray]:
         img_size = (size, size)
         images = []
         with h5py.File(path, 'r') as file:
@@ -71,7 +73,7 @@ class HDF5Dataset(torch.utils.data.Dataset):
         img = cv2.resize(img, img_size, interpolation=cv2.INTER_NEAREST)
         return img
         
-    def __len__(self) :
+    def __len__(self):
         return len(self.df)
     
     def __getitem__(self, idx) -> Tuple[Tensor, int]:
@@ -88,8 +90,8 @@ class HDF5Dataset(torch.utils.data.Dataset):
             frames = []
 
         if len(frames) > 0:
-            tfms = self.x_tfms or torch.from_numpy
-            frames = torch.stack(list(map(tfms, frames)))
+            transform_x = self.transforms or torch.from_numpy
+            frames = torch.stack(list(map(transform_x, frames)))
             pad_amount = num_frames - len(frames)
             if pad_amount > 0:
                 frames = pad_torch(frames, pad_amount, 'start')
