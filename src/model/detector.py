@@ -3,8 +3,8 @@ import torch
 from torch import nn, Tensor, FloatTensor, LongTensor
 from typing import Callable, Tuple, Union
 
-from .autoencoder import Autoencoder
-from .layers import conv3D, Lambda
+from .autoencoder import AutoEncoder
+from .layers import conv3D
 from .ops import identity, pool_gru
 
 DetectorOut = Tuple[FloatTensor, FloatTensor, FloatTensor]
@@ -21,11 +21,11 @@ class FakeDetector(nn.Module):
         self.out = nn.Linear(seq_out*2, 1, bias=False)
         
     @staticmethod
-    def _build_encoder(img_size: int, enc_dim: Tuple[int, int]) -> Autoencoder:
+    def _build_encoder(img_size: int, enc_dim: Tuple[int, int]) -> AutoEncoder:
         depth, size = enc_dim
         if img_size % 32:
             raise AttributeError('Image size should be a multiple of 32')  
-        return Autoencoder(in_ch=3, depth=depth, size=size, pad=1)
+        return AutoEncoder(in_ch=3, depth=depth, size=size, pad=1)
     
     @staticmethod
     def _validate(n: float):

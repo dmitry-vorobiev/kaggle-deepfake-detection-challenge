@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch import Tensor, FloatTensor, LongTensor
 from typing import Tuple
 
@@ -50,3 +51,20 @@ def act(h: FloatTensor, y: LongTensor) -> FloatTensor:
     # For simplicity, and without losing generality, 
     # we constrain a(x) to be equal to 1
     return a.clamp_max_(1).ceil_()
+
+
+def diff(x: Tensor, dim: int) -> Tensor:
+    mask = list(map(slice, x.shape[:dim]))
+    mask0 = mask + [slice(1, x.size(dim))]
+    mask1 = mask + [slice(0, -1)]
+    return x[mask0] - x[mask1]
+
+
+def image_grad(x: Tensor, n=1, keep_size=False) -> Tensor:
+    for _ in range(n):
+        x = diff(x, -1)
+        x = diff(x, -2)
+    if keep_size:
+        pad = [(n + i) // 2 for i in [0, 1, 0, 1]]
+        x = F.pad(x, pad)
+    return x
