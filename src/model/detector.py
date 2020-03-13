@@ -67,11 +67,11 @@ class FakeDetector(nn.Module):
     def forward(self, x: FloatTensor, y: LongTensor) -> DetectorOut:
         N, C, D, H, W = x.shape
         hidden, xs_hat = [], []
-        
+
         for f in range(D):
             h, x_hat = self.autoenc(x[:, :, f], y)
-            hidden.append(h[:, :, None])
-            xs_hat.append(x_hat[:, :, None])
+            hidden.append(h.unsqueeze(2))
+            xs_hat.append(x_hat.unsqueeze(2))
             
         hidden = torch.cat(hidden, dim=2)
         xs_hat = torch.cat(xs_hat, dim=2)
