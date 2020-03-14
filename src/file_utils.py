@@ -36,7 +36,8 @@ def dump_to_disk(images: List[np.ndarray], dir_path: str,
             path = os.path.join(dir_path, filename)
             write_images(path, images, img_format, scale, lossy)
     else:
-        print('No frames found %s/%s.mp4' % (dir_path, filename))
+        raise RuntimeError(
+            'No images to write for {}/{}'.format(dir_path, filename))
 
 
 def resize(image: np.ndarray, scale: float) -> np.ndarray:

@@ -8,7 +8,6 @@ from argparse import Namespace
 from functools import partial
 from typing import Dict, List, Callable, Optional
 
-import cv2
 import numpy as np
 import pandas as pd
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
@@ -91,10 +90,13 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str] = None, gpu='0',
         meta = df.iloc[idx]
         dir_path = os.path.join(args.save_dir, meta.dir)
         file_name = '%s_%d' % (meta.name[:-4], int(meta.label))
-        task = subproc.submit(
-            dump_to_disk, images, dir_path, file_name, args.img_format, 
-            scale=args.img_scale, pack=args.pack, lossy=args.lossy)
-        tasks.append(task)
+        if len(images) > 0:
+            task = subproc.submit(
+                dump_to_disk, images, dir_path, file_name, args.img_format,
+                scale=args.img_scale, pack=args.pack, lossy=args.lossy)
+            tasks.append(task)
+        else:
+            print('No frames found %s/%s.mp4' % (dir_path, file_name))
         if args.verbose:
             t1 = time.time()
             print('%s | %4s| %6d| %.02f s| %s/%s' % (
@@ -113,9 +115,9 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str] = None, gpu='0',
             return tasks
 
     with fut.ProcessPoolExecutor(args.num_workers) as subproc:
-        for start_pos in range(start, end, args.max_open_files):
-            end_pos = min(start_pos + args.max_open_files, end)
-            files = get_file_list(df, start_pos, end_pos, args.data_dir)
+        for offset in range(start, end, args.max_open_files):
+            last = min(offset + args.max_open_files, end)
+            files = get_file_list(df, offset, last, args.data_dir)
             if not len(files):
                 print('No files was read by {}'.format(device))
                 break
@@ -139,38 +141,38 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str] = None, gpu='0',
                     read_idx = video_batch[0]['label'].item()
                     new_faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
                     del video_batch, frames
-                    
+
                     if prev_idx is None or prev_idx == read_idx:
                         faces += new_faces
                     else:
-                        t0 = save(faces, start_pos + prev_idx, t0, 'dali')
+                        t0 = save(faces, offset + prev_idx, t0, 'dali')
                         faces = new_faces
                     prev_idx = read_idx
                     handled_files[read_idx] = True
                     tasks = maybe_wait(tasks)
                 # save last video
-                save(faces, start_pos + read_idx, t0, 'dali')
+                save(faces, offset + read_idx, t0, 'dali')
 
             del pipe, data_iter
             gc.collect()
             unhandled_files = (~handled_files).nonzero()[0]
             num_bad_samples = len(unhandled_files)
-            
+
             if num_bad_samples > 0:
-                print('Unable to parse %d videos with DALI' % num_bad_samples)
-                print('Running fallback decoding through OpenCV...')
+                print('Unable to parse %d videos with DALI\n'
+                      'Running fallback decoding through OpenCV...' % num_bad_samples)
                 for idx in unhandled_files:
                     if args.verbose:
                         t0 = time.time()
                     frames = read_frames_cv2(files[idx], args.num_frames)
                     if frames is not None:
                         faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
-                        t0 = save(faces, start_pos + idx, t0, 'cv2')
+                        t0 = save(faces, offset + idx, t0, 'cv2')
                     tasks = maybe_wait(tasks)
     print('{}: DONE'.format(device))
 
 
-def sizeof(data_dir: str, chunk_dirs: List[str], label: Optional[int]=None) -> int:
+def sizeof(data_dir: str, chunk_dirs: List[str], label: Optional[int] = None) -> int:
     df = read_labels(data_dir, chunk_dirs=chunk_dirs, label=label)
     return len(df)
 
