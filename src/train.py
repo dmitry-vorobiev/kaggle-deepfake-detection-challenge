@@ -48,10 +48,10 @@ def read_file_list(conf: DictConfig, title: str) -> List[str]:
 
 
 def create_loader(conf: DictConfig, title: str) -> DataLoader:
-    num_frames = conf.frames
+    num_frames = conf.sample.frames
     sampler = FrameSampler(num_frames,
-                           real_fake_ratio=conf.real_fake_ratio,
-                           p_sparse=conf.sparse_frames_prob)
+                           real_fake_ratio=conf.sample.real_fake_ratio,
+                           p_sparse=conf.sample.sparse_frames_prob)
     transforms = T.Compose([T.ToTensor()])
     Dataset = HDF5Dataset if conf.type == 'hdf5' else ImagesDataset
     ds = Dataset(conf.dir,
@@ -62,9 +62,10 @@ def create_loader(conf: DictConfig, title: str) -> DataLoader:
     print('Num {} samples: {}'.format(title, len(ds)))
 
     batch_sampler = BatchSampler(BalancedSampler(ds),
-                                 batch_size=conf.batch_size,
+                                 batch_size=conf.loader.batch_size,
                                  drop_last=True)
-    return DataLoader(ds, batch_sampler=batch_sampler)
+    num_workers = conf.get('loader.workers', 0)
+    return DataLoader(ds, batch_sampler=batch_sampler, num_workers=num_workers)
 
 
 def create_device(conf: DictConfig) -> torch.device:
@@ -74,25 +75,6 @@ def create_device(conf: DictConfig) -> torch.device:
     if isinstance(gpu, ListConfig):
         gpu = gpu[0]
     return torch.device('cuda:{}'.format(gpu))
-
-
-def prepare_batch(batch: Batch, device: torch.device) -> Batch:
-    x, y = batch
-    x = x.to(device)
-    y = y.to(device)
-    return x, y
-
-
-def gather_outs(batch: Batch, model_out: DetectorOut,
-                loss: FloatTensor) -> Dict[str, Tensor]:
-    y_pred = (model_out[-1] >= 0.5).flatten().float().detach().cpu()
-    y_true = batch[-1].float().cpu()
-    out = {'loss': loss.item(), 'y_pred': y_pred, 'y_true': y_true}
-    return out
-
-
-def _metrics_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-    return out['y_pred'], out['y_true']
 
 
 def humanize_time(timestamp: float) -> str:
@@ -163,12 +145,31 @@ def add_metrics(engine: Engine, metrics: Dict[str, Metric]):
         metric.attach(engine, name)
 
 
+def prepare_batch(batch: Batch, device: torch.device) -> Batch:
+    x, y = batch
+    x = x.to(device)
+    y = y.to(device)
+    return x, y
+
+
+def gather_outs(batch: Batch, model_out: DetectorOut,
+                loss: FloatTensor) -> Dict[str, Tensor]:
+    y_pred = (model_out[-1] >= 0.5).flatten().float().detach().cpu()
+    y_true = batch[-1].float().cpu()
+    out = {'loss': loss.item(), 'y_pred': y_pred, 'y_true': y_true}
+    return out
+
+
+def _metrics_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    return out['y_pred'], out['y_true']
+
+
 @hydra.main(config_path="../config/core.yaml")
 def main(conf: DictConfig):
     print(conf.pretty())
 
-    train_dl = create_loader(conf.loader.train, 'train')
-    valid_dl = create_loader(conf.loader.val, 'val')
+    train_dl = create_loader(conf.data.train, 'train')
+    valid_dl = create_loader(conf.data.val, 'val')
 
     device = create_device(conf)
     model = basic_detector_256().to(device)

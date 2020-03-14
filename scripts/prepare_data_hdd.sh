@@ -1,7 +1,7 @@
 export MKL_DEBUG_CPU_TYPE=5
 
 common="
- --start 0 --chunks 44
+ --start 0 --chunks 48
  --score_thresh 0.75 --nms_thresh 0.4 --top_k 500 --keep_top_k 5
  --batch_size 64 --gpus 1,0
  --img_format webp --num_workers 4 --task_queue_depth 12

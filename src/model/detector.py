@@ -10,11 +10,20 @@ from .ops import identity, pool_gru
 DetectorOut = Tuple[FloatTensor, FloatTensor, FloatTensor]
 
 
+def intermediate_block(in_ch: int, out_ch: int, stride=2) -> nn.Module:
+    layers = nn.Sequential(
+        conv3D(in_ch, out_ch, kernel=3, stride=stride, pad=1),
+        nn.BatchNorm3d(out_ch),
+        nn.ReLU(inplace=True)
+    )
+    return layers
+
+
 class FakeDetector(nn.Module):
     def __init__(self, img_size: int, enc_dim: Tuple[int, int], 
                  seq_size: Tuple[int, int], pool='conv'):
         super(FakeDetector, self).__init__()
-        self.autoenc = FakeDetector._build_encoder(img_size, enc_dim)
+        self.encoder = FakeDetector._build_encoder(img_size, enc_dim)
         seq_in, seq_out = seq_size
         self.pool = FakeDetector._build_pooling(img_size, enc_dim, seq_in, pool)
         self.seq_model = nn.GRU(seq_in, seq_out)
@@ -53,7 +62,7 @@ class FakeDetector(nn.Module):
             FakeDetector._validate(n)
             n = int(n)
             print('Using Conv3D pooling: {} layers'.format(n))
-            conv = [conv3D(emb_C, emb_C, stride=2) for _ in range(n)]
+            conv = [intermediate_block(emb_C, emb_C, stride=2) for _ in range(n)]
             return nn.Sequential(*conv)
         else:
             out_S = math.sqrt(seq_in / emb_S / enc_size)
@@ -69,7 +78,7 @@ class FakeDetector(nn.Module):
         hidden, xs_hat = [], []
 
         for f in range(D):
-            h, x_hat = self.autoenc(x[:, :, f], y)
+            h, x_hat = self.encoder(x[:, :, f], y)
             hidden.append(h.unsqueeze(2))
             xs_hat.append(x_hat.unsqueeze(2))
             
