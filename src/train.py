@@ -6,7 +6,7 @@ import torch
 import torchvision.transforms as T
 
 from ignite.engine import Engine, Events
-from ignite.metrics import Accuracy, Loss
+from ignite.metrics import Accuracy, Loss, Metric
 from omegaconf import DictConfig, ListConfig
 from torch import FloatTensor, LongTensor, Tensor
 from torch.utils.data import BatchSampler, DataLoader
@@ -91,7 +91,7 @@ def gather_outs(batch: Batch, model_out: DetectorOut,
     return out
 
 
-def parse_y(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+def _metrics_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
     return out['y_pred'], out['y_true']
 
 
@@ -125,6 +125,44 @@ def log_epoch(engine: Engine, trainer: Engine, title: str) -> None:
         cur_time, title, epoch, metrics['acc'], metrics['nll']))
 
 
+def create_trainer(model, optim, device, metrics=None):
+    def _update(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
+        model.train()
+        optim.zero_grad()
+        x, y = prepare_batch(batch, device)
+        out = model(x, y)
+        loss = combined_loss(out, x, y)
+        loss.backward()
+        optim.step()
+        return gather_outs(batch, out, loss)
+
+    engine = Engine(_update)
+    if metrics:
+        add_metrics(engine, metrics)
+    return engine
+
+
+def create_evaluator(model, device, metrics=None):
+    def _eval(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
+        model.eval()
+        with torch.no_grad():
+            x, y = prepare_batch(batch, device)
+            out = model(x, y)
+            loss = combined_loss(out, x, y)
+        return gather_outs(batch, out, loss)
+
+    engine = Engine(_eval)
+    if metrics:
+        add_metrics(engine, metrics)
+    return engine
+
+
+def add_metrics(engine: Engine, metrics: Dict[str, Metric]):
+    for name, metric in metrics.items():
+        metric._output_transform = _metrics_transform
+        metric.attach(engine, name)
+
+
 @hydra.main(config_path="../config/core.yaml")
 def main(conf: DictConfig):
     print(conf.pretty())
@@ -136,33 +174,9 @@ def main(conf: DictConfig):
     model = basic_detector_256().to(device)
     optim = torch.optim.Adam(model.parameters(), lr=conf.optimizer.lr)
 
-    def train(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
-        model.train()
-        optim.zero_grad()
-        x, y = prepare_batch(batch, device)
-        out = model(x, y)
-        loss = combined_loss(out, x, y)
-        loss.backward()
-        optim.step()
-        return gather_outs(batch, out, loss)
-
-    def validate(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
-        model.eval()
-        with torch.no_grad():
-            x, y = prepare_batch(batch, device)
-            out = model(x, y)
-            loss = combined_loss(out, x, y)
-        return gather_outs(batch, out, loss)
-
-    trainer = Engine(train)
-    evaluator = Engine(validate)
-
-    accuracy = Accuracy(output_transform=parse_y)
-    log_loss = Loss(torch.nn.BCELoss(), output_transform=parse_y)
-
-    for metric, key in zip([accuracy, log_loss], ['acc', 'nll']):
-        for engine in [trainer, evaluator]:
-            metric.attach(engine, key)
+    metrics = {'acc': Accuracy(), 'nll': Loss(torch.nn.BCELoss())}
+    trainer = create_trainer(model, optim, device, metrics)
+    evaluator = create_evaluator(model, device, metrics)
 
     log_interval = conf.logging.log_iter_interval
     iter_complete = Events.ITERATION_COMPLETED(every=log_interval)
