@@ -4,6 +4,7 @@ import gc
 import os
 import sys
 import time
+from argparse import Namespace
 from functools import partial
 from typing import Dict, List, Callable, Optional
 
@@ -39,7 +40,7 @@ def write_file_list(files: List[str], path: str) -> None:
                 h.write(f'{f} {i}\n')
 
 
-def find_faces(frames: np.ndarray, detect_fn: Callable, 
+def find_faces(frames: np.ndarray, detect_fn: Callable,
                max_face_num_thresh: float) -> List[np.ndarray]:
     detections = detect_fn(frames)
     if isinstance(frames, Tensor):
@@ -52,7 +53,7 @@ def find_faces(frames: np.ndarray, detect_fn: Callable,
             face = crop_square(frames[f], det[:4])
             if face is not None:
                 faces.append(face)
-    detections = None
+    del detections
     return faces
 
 
@@ -75,8 +76,8 @@ def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
     return cfg   
 
 
-def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0', 
-                 args: Dict[str, any]=None) -> None:
+def prepare_data(start: int, end: int, chunk_dirs: List[str] = None, gpu='0',
+                 args: Dict[str, any] = None) -> None:
     df = read_labels(args.data_dir, chunk_dirs=chunk_dirs, label=args.label)
     seq_len = args.num_frames // args.num_pass
     device = torch.device('cuda:{}'.format(gpu))
@@ -96,7 +97,7 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
         tasks.append(task)
         if args.verbose:
             t1 = time.time()
-            print('[%s | %s][%6d][%.02f s] %s/%s' % (
+            print('%s | %4s| %6d| %.02f s| %s/%s' % (
                 str(device), pipe_name, idx, t1 - t0, meta.dir, meta.name))
         return t1
 
@@ -118,21 +119,16 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
             if not len(files):
                 print('No files was read by {}'.format(device))
                 break
+            handled_files = np.zeros(len(files), dtype=np.bool)
             write_file_list(files, path=file_list_path)
-            pipe = VideoPipe(file_list_path, seq_len=seq_len, 
+            pipe = VideoPipe(file_list_path, seq_len=seq_len,
                              stride=args.stride, device_id=int(gpu))
             pipe.build()
-            num_samples = len(files)
             num_samples_read = pipe.epoch_size('reader')
-            num_bad_samples = num_samples - num_samples_read / args.num_pass
-            run_fallback_reader = num_bad_samples > 0
-            if run_fallback_reader:
-                proc_file_idxs = np.zeros(num_samples, dtype=np.bool)
-                
+
             if num_samples_read > 0:
                 data_iter = DALIGenericIterator(
-                    [pipe], ['frames', 'label'], 
-                    num_samples_read, dynamic_shape=True)
+                    [pipe], ['frames', 'label'], num_samples_read, dynamic_shape=True)
                 if args.verbose: 
                     t0 = time.time()
                 prev_idx = None
@@ -140,38 +136,36 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
 
                 for video_batch in data_iter:
                     frames = video_batch[0]['frames'].squeeze(0)
-                    read_idx =  video_batch[0]['label'].item()
+                    read_idx = video_batch[0]['label'].item()
                     new_faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
-                    video_batch, frames = None, None
+                    del video_batch, frames
                     
                     if prev_idx is None or prev_idx == read_idx:
                         faces += new_faces
                     else:
-                        t0 = save(faces, start_pos + prev_idx, t0, 'DALI')
+                        t0 = save(faces, start_pos + prev_idx, t0, 'dali')
                         faces = new_faces
                     prev_idx = read_idx
-                    if run_fallback_reader:
-                        proc_file_idxs[read_idx] = True
+                    handled_files[read_idx] = True
                     tasks = maybe_wait(tasks)
-                save(faces, start_pos + prev_idx, t0, 'DALI') # last video
+                # save last video
+                save(faces, start_pos + read_idx, t0, 'dali')
 
-            pipe, data_iter = None, None
+            del pipe, data_iter
             gc.collect()
+            unhandled_files = (~handled_files).nonzero()[0]
+            num_bad_samples = len(unhandled_files)
             
-            if run_fallback_reader:
-                unproc_file_idxs = (~proc_file_idxs).nonzero()[0]
-                num_bad_samples = len(unproc_file_idxs)
-                if not num_bad_samples:
-                    continue
+            if num_bad_samples > 0:
                 print('Unable to parse %d videos with DALI' % num_bad_samples)
                 print('Running fallback decoding through OpenCV...')
-                for idx in unproc_file_idxs:
-                    if args.verbose: 
+                for idx in unhandled_files:
+                    if args.verbose:
                         t0 = time.time()
                     frames = read_frames_cv2(files[idx], args.num_frames)
                     if frames is not None:
                         faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
-                        t0 = save(faces, start_pos + idx, t0, 'OpenCV')
+                        t0 = save(faces, start_pos + idx, t0, 'cv2')
                     tasks = maybe_wait(tasks)
     print('{}: DONE'.format(device))
 
@@ -181,7 +175,7 @@ def sizeof(data_dir: str, chunk_dirs: List[str], label: Optional[int]=None) -> i
     return len(df)
 
 
-def parse_args() -> Dict[str, any]:
+def parse_args() -> Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument('--start', type=int, default=0, help='start index')
     parser.add_argument('--end', type=int, default=None, help='end index')
@@ -242,7 +236,7 @@ def parse_args() -> Dict[str, any]:
     return args
 
 
-if __name__ == '__main__':
+def main():
     args = parse_args()
     gpus = args.gpus.split(',')
 
@@ -253,7 +247,6 @@ if __name__ == '__main__':
         mkdirs(args.save_dir, chunk_dirs)
     else:
         chunk_dirs = None
-
 
     print('reading from %s' % args.data_dir)
     if args.label is not None:
@@ -279,12 +272,16 @@ if __name__ == '__main__':
         with fut.ProcessPoolExecutor(len(gpus)) as ex:
             for i, gpu in enumerate(gpus):
                 job = ex.submit(proc_fn,
-                    start=(start + num_samples_per_gpu * i), 
-                    end=(start + num_samples_per_gpu * (i+1)), 
-                    gpu=gpu)
+                                start=(start + num_samples_per_gpu * i),
+                                end=(start + num_samples_per_gpu * (i+1)),
+                                gpu=gpu)
                 jobs.append(job)
             fut.wait(jobs)
         for job in jobs:
             _ = job.result()
     else:
         proc_fn(start, end, gpu=gpus[0])
+
+
+if __name__ == '__main__':
+    main()
