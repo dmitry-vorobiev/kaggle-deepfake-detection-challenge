@@ -1,10 +1,9 @@
-import math
 import torch
-from torch import nn, Tensor, FloatTensor, LongTensor
-from typing import Callable, Tuple, Union
+from torch import nn, FloatTensor, LongTensor
+from typing import List, Tuple
 
 from .autoencoder import AutoEncoder
-from .layers import conv3D
+from .layers import conv3D, Lambda
 from .ops import identity, pool_gru
 
 DetectorOut = Tuple[FloatTensor, FloatTensor, FloatTensor]
@@ -20,59 +19,53 @@ def intermediate_block(in_ch: int, out_ch: int, stride=2) -> nn.Module:
 
 
 class FakeDetector(nn.Module):
-    def __init__(self, img_size: int, enc_dim: Tuple[int, int], 
-                 seq_size: Tuple[int, int], pool='conv'):
+    def __init__(self, img_size: int, enc_depth: int, enc_width: int,
+                 mid_layers: List[int], out_ch: int,
+                 pool_size: Tuple[int, int] = None):
         super(FakeDetector, self).__init__()
-        self.encoder = FakeDetector._build_encoder(img_size, enc_dim)
-        seq_in, seq_out = seq_size
-        self.pool = FakeDetector._build_pooling(img_size, enc_dim, seq_in, pool)
-        self.seq_model = nn.GRU(seq_in, seq_out)
-        self.out = nn.Linear(seq_out*2, 1, bias=False)
-        
-    @staticmethod
-    def _build_encoder(img_size: int, enc_dim: Tuple[int, int]) -> AutoEncoder:
-        depth, size = enc_dim
         if img_size % 32:
-            raise AttributeError('Image size should be a multiple of 32')  
-        return AutoEncoder(in_ch=3, depth=depth, size=size, pad=1)
-    
-    @staticmethod
-    def _validate(n: float):
-        if math.modf(n)[0] > 0 or n < 1:
-            raise AttributeError(
-                'Sequence input size is incompatible with encoder dims')
-    
-    @staticmethod
-    def _build_pooling(img_size: int, enc_dim: Tuple[int, int], 
-                       seq_in: int, pool: str
-                       ) -> Union[nn.Module, Callable[[Tensor], Tensor]]:
-        enc_depth, enc_size = enc_dim
-        size_factor = 2**(enc_depth-1)
+            raise AttributeError("img_size should be a multiple of 32")
+        if out_ch % 2:
+            raise AttributeError("out_ch should be an even number")
+
+        size_factor = 2 ** (enc_depth - 1)
         if size_factor > img_size:
             raise AttributeError(
                 'Encoder dims (%d, %d) are incompatible with image '
-                'size (%d, %d)' % (enc_depth, enc_size, img_size, img_size))
-        emb_S = img_size // size_factor
-        emb_C = enc_size * size_factor
-        
-        if emb_C * emb_S**2 == seq_in:
-            return identity
-        elif pool == 'conv':
-            n = math.log2((emb_C * emb_S**2) / seq_in) / 2
-            FakeDetector._validate(n)
-            n = int(n)
-            print('Using Conv3D pooling: {} layers'.format(n))
-            conv = [intermediate_block(emb_C, emb_C, stride=2) for _ in range(n)]
-            return nn.Sequential(*conv)
+                'size (%d, %d)' % (enc_depth, enc_width, img_size, img_size))
+        emb_size = img_size // size_factor
+        emb_ch = enc_width * size_factor
+
+        self.encoder = AutoEncoder(in_ch=3, depth=enc_depth, size=enc_width, pad=1)
+
+        if img_size // 2 ** (enc_depth - 1) == 1:
+            self.middle = Lambda(identity)
+            rnn_in = emb_ch
+
+        elif len(mid_layers) > 0:
+            n_mid = len(mid_layers)
+            mid_layers = [emb_ch] + mid_layers
+            out_size = emb_size // 2 ** n_mid
+            if not out_size:
+                raise AssertionError('Too many middle layers...')
+            layers = [intermediate_block(mid_layers[i], mid_layers[i + 1], stride=2)
+                      for i in range(n_mid)]
+            self.middle = nn.Sequential(*layers)
+            rnn_in = mid_layers[-1] * out_size ** 2
+
+        elif pool_size is not None:
+            D, H = pool_size
+            self.middle = nn.AdaptiveAvgPool3d((D, H, H))
+            rnn_in = emb_ch * H ** 2
+
         else:
-            out_S = math.sqrt(seq_in / emb_S / enc_size)
-            FakeDetector._validate(out_S)
-            out_S = int(out_S)
-            in_dim = (emb_C, emb_S, emb_S)
-            out_dim = (emb_C, out_S, out_S)
-            print('Using avg pooling: {} -> {}'.format(in_dim, out_dim))
-            return nn.AdaptiveAvgPool3d(out_dim)
-    
+            raise AttributeError(
+                'Both mid_layers and pool_size are missing. '
+                'Unable to build model with provided configuration')
+
+        self.rnn = nn.GRU(rnn_in, out_ch // 2)
+        self.out = nn.Linear(out_ch, 1, bias=False)
+
     def forward(self, x: FloatTensor, y: LongTensor) -> DetectorOut:
         N, C, D, H, W = x.shape
         hidden, xs_hat = [], []
@@ -81,29 +74,18 @@ class FakeDetector(nn.Module):
             h, x_hat = self.encoder(x[:, :, f], y)
             hidden.append(h.unsqueeze(2))
             xs_hat.append(x_hat.unsqueeze(2))
-            
+
         hidden = torch.cat(hidden, dim=2)
         xs_hat = torch.cat(xs_hat, dim=2)
-        
-        seq = self.pool(hidden).reshape(N, D, -1)
-        seq_out = self.seq_model(seq)
+
+        seq = self.middle(hidden).reshape(N, D, -1)
+        seq_out = self.rnn(seq)
         seq_out = pool_gru(seq_out)
         y_hat = self.out(seq_out)
-        
+
         return hidden, xs_hat, y_hat
 
 
 def basic_detector_256():
-    return FakeDetector(img_size=256, enc_dim=(5, 8), seq_size=(2048, 64))
+    return FakeDetector(img_size=256, enc_depth=5, enc_width=8, mid_layers=[256, 256], out_ch=128)
 
-
-def wide_detector_256():
-    return FakeDetector(img_size=256, enc_dim=(5, 16), seq_size=(4096, 64))
-
-
-def deep_detector_256():
-    return FakeDetector(img_size=256, enc_dim=(9, 8), seq_size=(2048, 64))
-
-
-def deep_wide_detector_256():
-    return FakeDetector(img_size=256, enc_dim=(9, 16), seq_size=(4096, 64))

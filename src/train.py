@@ -15,10 +15,15 @@ from typing import Dict, Iterable, List, Tuple, Union
 from dataset.hdf5 import HDF5Dataset
 from dataset.images import ImagesDataset
 from dataset.sample import FrameSampler, BalancedSampler
-from model.detector import basic_detector_256, DetectorOut
+from model.detector import FakeDetector, DetectorOut
 from model.loss import combined_loss
 
 Batch = Tuple[Tensor, Tensor]
+
+datasets = {
+    'hdf5': HDF5Dataset,
+    'images': ImagesDataset
+}
 
 
 def read_file_list(conf: DictConfig, title: str) -> List[str]:
@@ -36,7 +41,7 @@ def read_file_list(conf: DictConfig, title: str) -> List[str]:
                 chunks = list(map(str.strip, chunks.split(',')))
             else:
                 raise AttributeError(
-                    "Config: incorrect format for 'loader.{}.chunks'".format(title))
+                    "Config: incorrect format for 'data.{}.chunks'".format(title))
         for c in chunks:
             dirs.append('dfdc_train_part_{}'.format(c))
     if 'dir_list' in conf.keys() and len(conf.dir_list):
@@ -47,19 +52,24 @@ def read_file_list(conf: DictConfig, title: str) -> List[str]:
     return dirs
 
 
-def create_loader(conf: DictConfig, title: str) -> DataLoader:
+def create_loader(conf: DictConfig, img_size: int, title: str) -> DataLoader:
     num_frames = conf.sample.frames
     sampler = FrameSampler(num_frames,
                            real_fake_ratio=conf.sample.real_fake_ratio,
                            p_sparse=conf.sample.sparse_frames_prob)
     transforms = T.Compose([T.ToTensor()])
-    Dataset = HDF5Dataset if conf.type == 'hdf5' else ImagesDataset
+    if conf.type not in datasets:
+        known_types = ', '.join(map(str, datasets.keys()))
+        raise AttributeError(
+            "Unknown dataset type: {} in data.{}.type. "
+            "Known types are: {}.".format(conf.type, title, known_types))
+    Dataset = datasets[conf.type]
     ds = Dataset(conf.dir,
-                 size=(num_frames, 256),
+                 size=(num_frames, img_size),
                  sampler=sampler,
                  transforms=transforms,
                  sub_dirs=read_file_list(conf, title))
-    print('Num {} samples: {}'.format(title, len(ds)))
+    print("Num {} samples: {}".format(title, len(ds)))
 
     batch_sampler = BatchSampler(BalancedSampler(ds),
                                  batch_size=conf.loader.batch_size,
@@ -75,6 +85,16 @@ def create_device(conf: DictConfig) -> torch.device:
     if isinstance(gpu, ListConfig):
         gpu = gpu[0]
     return torch.device('cuda:{}'.format(gpu))
+
+
+def create_model(conf: DictConfig) -> FakeDetector:
+    model = FakeDetector(
+        img_size=conf.img_size,
+        enc_depth=conf.enc_depth,
+        enc_width=conf.enc_width,
+        mid_layers=list(conf.mid_layers),
+        out_ch=conf.out_ch)
+    return model
 
 
 def humanize_time(timestamp: float) -> str:
@@ -168,11 +188,12 @@ def _metrics_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
 def main(conf: DictConfig):
     print(conf.pretty())
 
-    train_dl = create_loader(conf.data.train, 'train')
-    valid_dl = create_loader(conf.data.val, 'val')
+    img_size = conf.model.img_size
+    train_dl = create_loader(conf.data.train, img_size, 'train')
+    valid_dl = create_loader(conf.data.val, img_size, 'val')
 
     device = create_device(conf)
-    model = basic_detector_256().to(device)
+    model = create_model(conf.model).to(device)
     optim = torch.optim.Adam(model.parameters(), lr=conf.optimizer.lr)
 
     metrics = {'acc': Accuracy(), 'nll': Loss(torch.nn.BCELoss())}
