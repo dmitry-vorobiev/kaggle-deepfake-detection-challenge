@@ -1,11 +1,32 @@
 general:
-  gpus: 1
+  gpu: 1
 
 loader:
-  batch_size: 16
-  frames: 10
-  real_fake_ratio: 3.33
-  sparse_frames_prob: 0.75
+  train:
+    type: hdf5
+    batch_size: 16
+    frames: 10
+    real_fake_ratio: 3.33
+    sparse_frames_prob: 0.75
+    dir: /media/dmitry/other/dfdc-crops/hdf5
+    chunks: 5 - 50
+    dir_list: ''
+
+  val:
+    type: images
+    batch_size: 16
+    frames: 10
+    real_fake_ratio: 3.33
+    sparse_frames_prob: 1.0
+    dir: /media/dmitry/other/dfdc-crops/webp_lossy
+    chunks: 0, 1, 2, 3, 4
+
+optimizer:
+  lr: 0.001
 
 train:
-  lr: 0.001
+  epochs: 2
+  epoch_length: 10
+
+logging:
+  log_iter_interval: 2

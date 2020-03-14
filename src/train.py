@@ -1,5 +1,6 @@
 import datetime as dt
 import hydra
+import os
 import time
 import torch
 import torchvision.transforms as T
@@ -17,28 +18,62 @@ from dataset.sample import FrameSampler, BalancedSampler
 from model.detector import basic_detector_256, DetectorOut
 from model.loss import combined_loss
 
-
-HDF5_DIR = '/media/dmitry/other/dfdc-crops/hdf5'
 Batch = Tuple[Tensor, Tensor]
 
 
-def create_loader(bs: int, num_frames: int, real_fake_ratio: float,
-                  p_sparse_frames: float, chunks: Iterable[int]) -> DataLoader:
-    dirs = [f'dfdc_train_part_{i}' for i in chunks]
+def read_file_list(conf: DictConfig, title: str) -> List[str]:
+    dirs = []
+    if 'chunks' in conf.keys():
+        chunks = conf.chunks
+        if isinstance(chunks, int):
+            chunks = [chunks]
+        elif isinstance(chunks, str):
+            interval = list(map(str.strip, chunks.split('-')))
+            if len(interval) == 2:
+                interval = map(int, interval)
+                chunks = list(range(*interval))
+            elif len(interval) < 2:
+                chunks = list(map(str.strip, chunks.split(',')))
+            else:
+                raise AttributeError(
+                    "Config: incorrect format for 'loader.{}.chunks'".format(title))
+        for c in chunks:
+            dirs.append('dfdc_train_part_{}'.format(c))
+    if 'dir_list' in conf.keys() and len(conf.dir_list):
+        with open(conf.dir_list) as h:
+            path = h.readline()
+            if os.path.isdir(path):
+                dirs.append(path)
+    return dirs
+
+
+def create_loader(conf: DictConfig, title: str) -> DataLoader:
+    num_frames = conf.frames
     sampler = FrameSampler(num_frames,
-                           real_fake_ratio=real_fake_ratio,
-                           p_sparse=p_sparse_frames)
+                           real_fake_ratio=conf.real_fake_ratio,
+                           p_sparse=conf.sparse_frames_prob)
     transforms = T.Compose([T.ToTensor()])
+    Dataset = HDF5Dataset if conf.type == 'hdf5' else ImagesDataset
+    ds = Dataset(conf.dir,
+                 size=(num_frames, 256),
+                 sampler=sampler,
+                 transforms=transforms,
+                 sub_dirs=read_file_list(conf, title))
+    print('Num {} samples: {}'.format(title, len(ds)))
 
-    ds = HDF5Dataset(HDF5_DIR,
-                     size=(num_frames, 256),
-                     sampler=sampler,
-                     transforms=transforms,
-                     sub_dirs=dirs)
-    print('Num samples: {}'.format(len(ds)))
-
-    batch_sampler = BatchSampler(BalancedSampler(ds), batch_size=bs, drop_last=True)
+    batch_sampler = BatchSampler(BalancedSampler(ds),
+                                 batch_size=conf.batch_size,
+                                 drop_last=True)
     return DataLoader(ds, batch_sampler=batch_sampler)
+
+
+def create_device(conf: DictConfig) -> torch.device:
+    if 'gpu' not in conf.general.keys():
+        return torch.device('cpu')
+    gpu = conf.general.gpu
+    if isinstance(gpu, ListConfig):
+        gpu = gpu[0]
+    return torch.device('cuda:{}'.format(gpu))
 
 
 def prepare_batch(batch: Batch, device: torch.device) -> Batch:
@@ -54,6 +89,10 @@ def gather_outs(batch: Batch, model_out: DetectorOut,
     y_true = batch[-1].float().cpu()
     out = {'loss': loss.item(), 'y_pred': y_pred, 'y_true': y_true}
     return out
+
+
+def parse_y(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    return out['y_pred'], out['y_true']
 
 
 def humanize_time(timestamp: float) -> str:
@@ -82,40 +121,20 @@ def log_epoch(engine: Engine, trainer: Engine, title: str) -> None:
     metrics = engine.state.metrics
     t1 = time.time()
     cur_time = humanize_time(t1)
-    print("\n[{}] {:>5} | ep: {}, acc: {:.3f}, nll: {:.3f}\n".format(
+    print("[{}] {:>5} | ep: {}, acc: {:.3f}, nll: {:.3f}\n".format(
         cur_time, title, epoch, metrics['acc'], metrics['nll']))
 
 
 @hydra.main(config_path="../config/core.yaml")
-def main(cfg: DictConfig):
-    print(cfg.pretty())
-    bs = cfg.get('loader.batch_size', 32)
-    num_frames = cfg.get('loader.frames', 10)
-    real_fake_ratio = cfg.get('loader.real_fake_ratio', 1.)
-    p_sparse = cfg.get('loader.sparse_frames_prob', 1.)
+def main(conf: DictConfig):
+    print(conf.pretty())
 
-    train_dl = create_loader(
-        bs=bs,
-        num_frames=num_frames,
-        real_fake_ratio=real_fake_ratio,
-        p_sparse_frames=p_sparse,
-        chunks=range(5, 30))
+    train_dl = create_loader(conf.loader.train, 'train')
+    valid_dl = create_loader(conf.loader.val, 'val')
 
-    valid_dl = create_loader(
-        bs=bs,
-        num_frames=num_frames,
-        real_fake_ratio=real_fake_ratio,
-        p_sparse_frames=p_sparse,
-        chunks=range(0, 5))
-
-    gpu = cfg.general.gpus
-    if isinstance(gpu, ListConfig):
-        gpu = gpu[0]
-    device = torch.device('cuda:%d' % gpu)
-
+    device = create_device(conf)
     model = basic_detector_256().to(device)
-    lr = cfg.get('train.lr', 0.001)
-    optim = torch.optim.Adam(model.parameters(), lr=lr)
+    optim = torch.optim.Adam(model.parameters(), lr=conf.optimizer.lr)
 
     def train(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.train()
@@ -138,9 +157,6 @@ def main(cfg: DictConfig):
     trainer = Engine(train)
     evaluator = Engine(validate)
 
-    def parse_y(out: Dict[str, Tensor]):
-        return [out['y_pred'], out['y_true']]
-
     accuracy = Accuracy(output_transform=parse_y)
     log_loss = Loss(torch.nn.BCELoss(), output_transform=parse_y)
 
@@ -148,8 +164,7 @@ def main(cfg: DictConfig):
         for engine in [trainer, evaluator]:
             metric.attach(engine, key)
 
-    log_interval = 1
-
+    log_interval = conf.logging.log_iter_interval
     iter_complete = Events.ITERATION_COMPLETED(every=log_interval)
 
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
@@ -159,7 +174,11 @@ def main(cfg: DictConfig):
 
     trainer.add_event_handler(Events.EPOCH_COMPLETED,
                               lambda _: evaluator.run(valid_dl, epoch_length=5))
-    trainer.run(train_dl, max_epochs=3, epoch_length=10)
+
+    epoch_length = conf.train.epoch_length
+    if epoch_length < 1:
+        epoch_length = None
+    trainer.run(train_dl, max_epochs=conf.train.epochs, epoch_length=epoch_length)
 
 
 if __name__ == '__main__':
