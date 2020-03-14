@@ -1,0 +1,11 @@
+general:
+  gpus: 1
+
+loader:
+  batch_size: 16
+  frames: 10
+  real_fake_ratio: 3.33
+  sparse_frames_prob: 0.75
+
+train:
+  lr: 0.001

@@ -1,10 +1,12 @@
 import datetime as dt
+import hydra
 import time
 import torch
 import torchvision.transforms as T
-import sys
+
 from ignite.engine import Engine, Events
 from ignite.metrics import Accuracy, Loss
+from omegaconf import DictConfig, ListConfig
 from torch import FloatTensor, LongTensor, Tensor
 from torch.utils.data import BatchSampler, DataLoader
 from typing import Dict, Iterable, List, Tuple, Union
@@ -84,24 +86,36 @@ def log_epoch(engine: Engine, trainer: Engine, title: str) -> None:
         cur_time, title, epoch, metrics['acc'], metrics['nll']))
 
 
-def main():
+@hydra.main(config_path="../config/core.yaml")
+def main(cfg: DictConfig):
+    print(cfg.pretty())
+    bs = cfg.get('loader.batch_size', 32)
+    num_frames = cfg.get('loader.frames', 10)
+    real_fake_ratio = cfg.get('loader.real_fake_ratio', 1.)
+    p_sparse = cfg.get('loader.sparse_frames_prob', 1.)
+
     train_dl = create_loader(
-        bs=12,
-        num_frames=10,
-        real_fake_ratio=100 / 30,
-        p_sparse_frames=0.75,
+        bs=bs,
+        num_frames=num_frames,
+        real_fake_ratio=real_fake_ratio,
+        p_sparse_frames=p_sparse,
         chunks=range(5, 30))
 
     valid_dl = create_loader(
-        bs=12,
-        num_frames=10,
-        real_fake_ratio=100 / 30,
-        p_sparse_frames=1.,
+        bs=bs,
+        num_frames=num_frames,
+        real_fake_ratio=real_fake_ratio,
+        p_sparse_frames=p_sparse,
         chunks=range(0, 5))
 
-    device = torch.device('cuda:1')
+    gpu = cfg.general.gpus
+    if isinstance(gpu, ListConfig):
+        gpu = gpu[0]
+    device = torch.device('cuda:%d' % gpu)
+
     model = basic_detector_256().to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=0.001)
+    lr = cfg.get('train.lr', 0.001)
+    optim = torch.optim.Adam(model.parameters(), lr=lr)
 
     def train(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.train()
