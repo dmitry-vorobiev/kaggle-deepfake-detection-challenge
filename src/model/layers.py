@@ -1,6 +1,6 @@
 import torch
 from torch import nn, Tensor
-from typing import Callable
+from typing import Any, Callable
 
 
 def conv2D(in_ch: int, out_ch: int, kernel=3, stride=1, pad=1, bias=True, a=0) -> nn.Conv2d:
@@ -25,7 +25,7 @@ def conv3D(in_ch: int, out_ch: int, kernel=3, stride=1, pad=1, bias=True, a=0) -
 
 
 class Lambda(nn.Module):
-    def __init__(self, fn: Callable[[Tensor], Tensor]):
+    def __init__(self, fn: Callable[[Any], Tensor]):
         super(Lambda, self).__init__()
         self.fn = fn
         

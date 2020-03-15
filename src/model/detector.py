@@ -9,13 +9,14 @@ from .ops import identity, pool_gru
 DetectorOut = Tuple[Tensor, Tensor, Tensor]
 
 
-def intermediate_block(in_ch: int, out_ch: int, stride=2) -> nn.Module:
-    layers = nn.Sequential(
-        conv3D(in_ch, out_ch, kernel=3, stride=stride, pad=1),
-        nn.BatchNorm3d(out_ch),
-        nn.ReLU(inplace=True)
-    )
-    return layers
+def middle_block(in_ch: int, out_ch: int, kernel=3, stride=2, bn=True) -> nn.Module:
+    conv = conv3D(in_ch, out_ch, kernel=kernel, stride=stride,
+                  pad=kernel // 2, bias=not bn)
+    relu = nn.ReLU(inplace=True)
+    layers = [conv, relu]
+    if bn:
+        layers.append(nn.BatchNorm3d(out_ch))
+    return nn.Sequential(*layers)
 
 
 class FakeDetector(nn.Module):
@@ -36,7 +37,7 @@ class FakeDetector(nn.Module):
         emb_size = img_size // size_factor
         emb_ch = enc_width * size_factor
 
-        self.encoder = AutoEncoder(in_ch=3, depth=enc_depth, size=enc_width, pad=1)
+        self.encoder = AutoEncoder(in_ch=3, depth=enc_depth, width=enc_width)
 
         if img_size // 2 ** (enc_depth - 1) == 1:
             self.middle = Lambda(identity)
@@ -48,7 +49,7 @@ class FakeDetector(nn.Module):
             out_size = emb_size // 2 ** n_mid
             if not out_size:
                 raise AssertionError('Too many middle layers...')
-            layers = [intermediate_block(mid_layers[i], mid_layers[i + 1], stride=2)
+            layers = [middle_block(mid_layers[i], mid_layers[i + 1], stride=2)
                       for i in range(n_mid)]
             self.middle = nn.Sequential(*layers)
             rnn_in = mid_layers[-1] * out_size ** 2

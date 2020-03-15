@@ -1,10 +1,9 @@
 import numpy as np
 import os
 import pandas as pd
-import torch
 import torch.nn.functional as F
 from torch import Tensor
-from typing import List, Optional, Union
+from typing import List, Optional
 
 
 def read_labels(base_path: str, chunk_dirs: Optional[List[str]] = None,
