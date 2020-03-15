@@ -78,11 +78,7 @@ def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
 def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0', 
                  args: Dict[str, any]=None) -> None:
     df = read_labels(args.data_dir, chunk_dirs=chunk_dirs, label=args.label)
-    if args.num_pass != -1:
-        num_pass = args.num_pass
-        seq_len = args.num_frames // num_pass
-
-
+    seq_len = args.num_frames // args.num_pass
     device = torch.device('cuda:{}'.format(gpu))
     cfg = detector_cfg(args)
     detector = init_detector(cfg, args.det_weights, device).to(device)
@@ -118,26 +114,17 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str]=None, gpu='0',
     with fut.ProcessPoolExecutor(args.num_workers) as subproc:
         for start_pos in range(start, end, args.max_open_files):
             end_pos = min(start_pos + args.max_open_files, end)
-
             files = get_file_list(df, start_pos, end_pos, args.data_dir)
             if not len(files):
                 print('No files was read by {}'.format(device))
                 break
-
-            if args.num_pass == -1:
-
-                max_size_mb = df.iloc[start_pos]['size'] / 1024 / 1024
-                num_pass =int(np.ceil(max_size_mb / 5* args.num_frames / 100))
-                seq_len = args.num_frames // num_pass
-                print(f'num_pass {num_pass} for max filesize {max_size_mb:.1f} mb')
-
             write_file_list(files, path=file_list_path)
             pipe = VideoPipe(file_list_path, seq_len=seq_len, 
                              stride=args.stride, device_id=int(gpu))
             pipe.build()
             num_samples = len(files)
             num_samples_read = pipe.epoch_size('reader')
-            num_bad_samples = num_samples - num_samples_read / num_pass
+            num_bad_samples = num_samples - num_samples_read / args.num_pass
             run_fallback_reader = num_bad_samples > 0
             if run_fallback_reader:
                 proc_file_idxs = np.zeros(num_samples, dtype=np.bool)
@@ -207,7 +194,7 @@ def parse_args() -> Dict[str, any]:
                         help='max number of frames to use per each video')
     parser.add_argument('--stride', type=int, default=10, 
                         help='interval between consecutive frames')
-    parser.add_argument('--num_pass', type=int, default=-1,
+    parser.add_argument('--num_pass', type=int, default=1, 
                         help='split parsing of each video into multiple '
                              'passes to save GPU memory')
     parser.add_argument('--batch_size', type=int, default=32, 

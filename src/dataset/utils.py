@@ -23,6 +23,10 @@ def read_labels(base_path: str, chunk_dirs: Optional[List[str]] = None,
         if label is not None:
             mask = df['label'] == label
             df = df[mask]
+
+        df['size'] = df.index.map(lambda x: os.path.getsize(os.path.join(base_path, dir_name, x)) if os.path.isfile(os.path.join(base_path, dir_name, x)) else 0)
+        df = df[df['size']>0]
+        df = df.sort_values('size', ascending=False)
         labels.append(df)
     return pd.concat(labels)
 
