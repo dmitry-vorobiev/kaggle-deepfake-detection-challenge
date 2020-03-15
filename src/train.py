@@ -5,7 +5,8 @@ import time
 import torch
 import torchvision.transforms as T
 
-from ignite.engine import Engine, Events
+from functools import partial
+from ignite.engine import Engine, Events, State
 from ignite.metrics import Accuracy, Loss, Metric
 from omegaconf import DictConfig, ListConfig
 from torch import FloatTensor, LongTensor, Tensor
@@ -95,6 +96,28 @@ def create_model(conf: DictConfig) -> FakeDetector:
     return model
 
 
+def create_optimizer(conf: DictConfig, params: Iterable[FloatTensor]) -> torch.optim.Adam:
+    optim = torch.optim.Adam(
+        params,
+        lr=conf.lr,
+        betas=conf.betas,
+        weight_decay=conf.weight_decay)
+    return optim
+
+
+def create_one_cycle_scheduler(conf: DictConfig, epochs: int, epoch_length: int):
+    scheduler = partial(
+        torch.optim.lr_scheduler.OneCycleLR,
+        max_lr=conf.max_lr,
+        epochs=epochs,
+        steps_per_epoch=epoch_length,
+        pct_start=conf.pct_start,
+        anneal_strategy=conf.anneal_strategy,
+        base_momentum=conf.base_momentum,
+        max_momentum=conf.max_momentum)
+    return scheduler
+
+
 def humanize_time(timestamp: float) -> str:
     return dt.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
 
@@ -106,13 +129,17 @@ def on_epoch_start(engine: Engine):
 def log_iter(engine: Engine, trainer: Engine, title: str, log_interval: int) -> None:
     epoch = trainer.state.epoch
     iteration = engine.state.iteration
-    loss = engine.state.output['loss']
+    stats = dict()
+    if hasattr(engine.state, 'lr'):
+        stats['lr'] = ', '.join(['%.1e' % val for val in engine.state.lr])
+    stats['loss'] = '%.3f' % engine.state.output['loss']
+    stats = ', '.join(['{}: {}'.format(*e) for e in stats.items()])
     t0 = engine.state.t0
     t1 = time.time()
     it_time = (t1 - t0) / log_interval
     cur_time = humanize_time(t1)
-    print("[{}][{:.2f} s] {:>5} | ep: {:2d}, it: {:3d}, loss: {:.5f}".format(
-        cur_time, it_time, title, epoch, iteration, loss))
+    print("[{}][{:.2f} s] {:>5} | ep: {:2d}, it: {:3d}, {}".format(
+        cur_time, it_time, title, epoch, iteration, stats))
     engine.state.t0 = t1
 
 
@@ -134,6 +161,7 @@ def create_trainer(model, optim, device, metrics=None):
         loss = combined_loss(out, x, y)
         loss.backward()
         optim.step()
+        engine.state.lr = [p['lr'] for p in optim.param_groups]
         return gather_outs(batch, out, loss)
 
     engine = Engine(_update)
@@ -196,7 +224,7 @@ def main(conf: DictConfig):
 
     device = create_device(conf)
     model = create_model(conf.model).to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=conf.optimizer.lr)
+    optim = create_optimizer(conf.optimizer, model.parameters())
 
     metrics = {
         'acc': Accuracy(output_transform=_accuracy_transform),
@@ -213,13 +241,29 @@ def main(conf: DictConfig):
         engine.add_event_handler(iter_complete, log_iter, trainer, name, log_interval)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
 
-    trainer.add_event_handler(Events.EPOCH_COMPLETED,
-                              lambda _: evaluator.run(valid_dl, epoch_length=5))
-
+    epochs = conf.train.epochs
     epoch_length = conf.train.epoch_length
     if epoch_length < 1:
-        epoch_length = None
-    trainer.run(train_dl, max_epochs=conf.train.epochs, epoch_length=epoch_length)
+        epoch_length = len(train_dl)
+
+    if 'schedule' in conf:
+        lr_schedule = conf.schedule.strategy
+        scheduler = None
+        if lr_schedule == 'one-cycle':
+            scheduler = create_one_cycle_scheduler(
+                conf.schedule, epochs, epoch_length)(optim)
+        elif lr_schedule == 'multi-step':
+            print('Yo bro')
+        else:
+            raise AttributeError('Unknown schedule: {}'.format(conf.shedule))
+        if scheduler:
+            trainer.add_event_handler(Events.ITERATION_COMPLETED,
+                                      lambda _: scheduler.step())
+
+    trainer.add_event_handler(
+        Events.EPOCH_COMPLETED(every=conf.validate.interval),
+        lambda _: evaluator.run(valid_dl, epoch_length=5))
+    trainer.run(train_dl, max_epochs=epochs, epoch_length=epoch_length)
 
 
 if __name__ == '__main__':
