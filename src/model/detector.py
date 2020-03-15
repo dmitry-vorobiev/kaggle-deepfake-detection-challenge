@@ -10,8 +10,7 @@ DetectorOut = Tuple[Tensor, Tensor, Tensor]
 
 
 def middle_block(in_ch: int, out_ch: int, kernel=3, stride=2, bn=True) -> nn.Module:
-    conv = conv3D(in_ch, out_ch, kernel=kernel, stride=stride,
-                  pad=kernel // 2, bias=not bn)
+    conv = conv3D(in_ch, out_ch, kernel=kernel, stride=stride, bias=not bn)
     relu = nn.ReLU(inplace=True)
     layers = [conv, relu]
     if bn:

@@ -12,9 +12,7 @@ from torch import FloatTensor, LongTensor, Tensor
 from torch.utils.data import BatchSampler, DataLoader
 from typing import Dict, Iterable, List, Tuple, Union
 
-from dataset.hdf5 import HDF5Dataset
-from dataset.images import ImagesDataset
-from dataset.sample import FrameSampler, BalancedSampler
+from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler
 from model.detector import FakeDetector, DetectorOut
 from model.loss import combined_loss
 
@@ -161,7 +159,6 @@ def create_evaluator(model, device, metrics=None):
 
 def add_metrics(engine: Engine, metrics: Dict[str, Metric]):
     for name, metric in metrics.items():
-        metric._output_transform = _metrics_transform
         metric.attach(engine, name)
 
 
@@ -174,13 +171,18 @@ def prepare_batch(batch: Batch, device: torch.device) -> Batch:
 
 def gather_outs(batch: Batch, model_out: DetectorOut,
                 loss: FloatTensor) -> Dict[str, Tensor]:
-    y_pred = torch.sigmoid(model_out[-1]).flatten(1).float().detach().cpu()
+    y_pred = model_out[-1].detach()
+    y_pred = torch.sigmoid(y_pred).squeeze_(1).cpu()
     y_true = batch[-1].float().cpu()
     out = {'loss': loss.item(), 'y_pred': y_pred, 'y_true': y_true}
     return out
 
 
-def _metrics_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+def _accuracy_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+    return (out['y_pred'] >= 0.5).float(), out['y_true']
+
+
+def _nll_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
     return out['y_pred'], out['y_true']
 
 
@@ -196,7 +198,10 @@ def main(conf: DictConfig):
     model = create_model(conf.model).to(device)
     optim = torch.optim.Adam(model.parameters(), lr=conf.optimizer.lr)
 
-    metrics = {'acc': Accuracy(), 'nll': Loss(torch.nn.BCELoss())}
+    metrics = {
+        'acc': Accuracy(output_transform=_accuracy_transform),
+        'nll': Loss(torch.nn.BCELoss(), output_transform=_nll_transform)
+    }
     trainer = create_trainer(model, optim, device, metrics)
     evaluator = create_evaluator(model, device, metrics)
 

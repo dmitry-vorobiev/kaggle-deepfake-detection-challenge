@@ -11,8 +11,7 @@ AutoEncoderOut = Tuple[FloatTensor, FloatTensor]
 
 
 def encoder_block(in_ch: int, out_ch: int, kernel=3, stride=2, bn=True) -> nn.Module:
-    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=stride,
-                  pad=kernel//2, bias=not bn)
+    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=stride, bias=not bn)
     relu = nn.ReLU(inplace=True)
     layers = [conv, relu]
     if bn:
@@ -22,8 +21,7 @@ def encoder_block(in_ch: int, out_ch: int, kernel=3, stride=2, bn=True) -> nn.Mo
 
 def decoder_block(in_ch: int, out_ch: int, kernel=3, scale=2, bn=True) -> nn.Module:
     upsample = Lambda(partial(F.interpolate, scale_factor=scale, mode='nearest'))
-    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=1,
-                  pad=kernel//2, bias=not bn)
+    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=1, bias=not bn)
     relu = nn.ReLU(inplace=True)
     layers = [upsample, conv, relu]
     if bn:
@@ -48,7 +46,7 @@ class AutoEncoder(nn.Module):
     def _build_decoder(out_ch: int, depth: int, size: int) -> nn.Module:
         main = [decoder_block(size * 2**(i+1), size * 2**i)
                 for i in sorted(range(0, depth - 1), reverse=True)]
-        last = conv2D(size, out_ch, kernel=3, stride=1, pad=1)
+        last = conv2D(size, out_ch, kernel=3, stride=1)
         return nn.Sequential(*main, last, nn.Tanh())
 
     def forward(self, x: FloatTensor, y: LongTensor) -> AutoEncoderOut:
