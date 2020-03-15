@@ -1,21 +1,21 @@
 import torch
 import torch.nn.functional as F
-from torch import FloatTensor, LongTensor
+from torch import FloatTensor, LongTensor, Tensor
 from typing import Tuple
 
 from .detector import DetectorOut
 from .ops import act
 
 
-def zeros(n: int, device: torch.device) -> LongTensor:
+def zeros(n: int, device: torch.device) -> Tensor:
     return torch.zeros(n, dtype=torch.int64, device=device)
 
 
-def ones(n: int, device: torch.device) -> LongTensor:
+def ones(n: int, device: torch.device) -> Tensor:
     return torch.ones(n, dtype=torch.int64, device=device)
 
 
-def act_loss(x: FloatTensor, y: LongTensor) -> FloatTensor:
+def act_loss(x: Tensor, y: LongTensor) -> Tensor:
     device = x.device
     pos = y.nonzero().reshape(-1)
     neg = (y - 1).nonzero().reshape(-1)
@@ -34,7 +34,7 @@ def act_loss(x: FloatTensor, y: LongTensor) -> FloatTensor:
     return (neg_loss.sum() + pos_loss.sum()) / y.size(0)
 
 
-def combined_loss(out: DetectorOut, x: FloatTensor, y: LongTensor) -> FloatTensor:
+def combined_loss(out: DetectorOut, x: FloatTensor, y: LongTensor) -> Tensor:
     h, x_hat, y_hat = out
     
     loss1 = act_loss(h, y)

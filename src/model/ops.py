@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from torch import Tensor, FloatTensor, LongTensor
+from torch import Tensor
 from typing import Tuple
 
 
@@ -8,7 +8,7 @@ def identity(x: Tensor) -> Tensor:
     return x
 
 
-def pool_gru(out_gru: Tuple[FloatTensor, FloatTensor]) -> FloatTensor:
+def pool_gru(out_gru: Tuple[Tensor, Tensor]) -> Tensor:
     out, _ = out_gru
     out_avg = torch.mean(out, dim=1)
     out_max, _ = torch.max(out, dim=1)
@@ -40,7 +40,7 @@ def select(h: Tensor, y: Tensor) -> Tensor:
     return h
 
 
-def act(h: FloatTensor, y: LongTensor) -> FloatTensor:
+def act(h: Tensor, y: Tensor) -> Tensor:
     N = y.size(0)
     y = reshape_as(y, h)
     h0, h1 = h.chunk(2, dim=1)

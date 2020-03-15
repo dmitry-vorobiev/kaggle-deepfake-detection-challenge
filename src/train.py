@@ -174,7 +174,7 @@ def prepare_batch(batch: Batch, device: torch.device) -> Batch:
 
 def gather_outs(batch: Batch, model_out: DetectorOut,
                 loss: FloatTensor) -> Dict[str, Tensor]:
-    y_pred = (model_out[-1] >= 0.5).flatten().float().detach().cpu()
+    y_pred = torch.sigmoid(model_out[-1]).flatten(1).float().detach().cpu()
     y_true = batch[-1].float().cpu()
     out = {'loss': loss.item(), 'y_pred': y_pred, 'y_true': y_true}
     return out
