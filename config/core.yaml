@@ -1,8 +1,11 @@
 defaults:
-  - schedule: one-cycle
+  - lr_schedule: one-cycle
+  - common_transforms
 
 general:
   gpu: 1
+
+test: ${general.gpu}
 
 data:
   train:
@@ -45,6 +48,9 @@ optimizer:
 train:
   epochs: 1
   epoch_length: 100
+  checkpoints:
+    interval_epoch: 5
+    interval_iteration: 2000
 
 validate:
   interval: 1

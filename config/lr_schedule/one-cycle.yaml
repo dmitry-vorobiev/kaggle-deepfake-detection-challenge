@@ -1,4 +1,4 @@
-schedule:
+lr_schedule:
   strategy: one-cycle
   max_lr: 0.001
   pct_start: 0.3

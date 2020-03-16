@@ -6,14 +6,15 @@ import torch
 import torchvision.transforms as T
 
 from functools import partial
-from ignite.engine import Engine, Events, State
+from ignite.engine import Engine, Events
+from ignite.handlers import Checkpoint, DiskSaver
 from ignite.metrics import Accuracy, Loss, Metric
 from omegaconf import DictConfig, ListConfig
 from torch import FloatTensor, LongTensor, Tensor
 from torch.utils.data import BatchSampler, DataLoader
-from typing import Dict, Iterable, List, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Tuple, Union
 
-from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler
+from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
 from model.detector import FakeDetector, DetectorOut
 from model.loss import combined_loss
 
@@ -51,12 +52,20 @@ def read_file_list(conf: DictConfig, title: str) -> List[str]:
     return dirs
 
 
-def create_loader(conf: DictConfig, img_size: int, title: str) -> DataLoader:
+def create_transforms(conf: DictConfig) -> Callable[[Any], Tensor]:
+    transforms = simple_transforms(
+        conf.resize_to,
+        mean=conf.mean,
+        std=conf.std,
+        hpf_n=conf.hpf_order)
+    return transforms
+
+
+def create_loader(conf: DictConfig, title: str) -> DataLoader:
     num_frames = conf.sample.frames
     sampler = FrameSampler(num_frames,
                            real_fake_ratio=conf.sample.real_fake_ratio,
                            p_sparse=conf.sample.sparse_frames_prob)
-    transforms = T.Compose([T.ToTensor()])
     if conf.type not in datasets:
         known_types = ', '.join(map(str, datasets.keys()))
         raise AttributeError(
@@ -64,9 +73,9 @@ def create_loader(conf: DictConfig, img_size: int, title: str) -> DataLoader:
             "Known types are: {}.".format(conf.type, title, known_types))
     Dataset = datasets[conf.type]
     ds = Dataset(conf.dir,
-                 size=(num_frames, img_size),
+                 frames=conf.sample.frames,
                  sampler=sampler,
-                 transforms=transforms,
+                 transforms=create_transforms(conf.transforms),
                  sub_dirs=read_file_list(conf, title))
     print("Num {} samples: {}".format(title, len(ds)))
 
@@ -218,13 +227,28 @@ def _nll_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
 def main(conf: DictConfig):
     print(conf.pretty())
 
-    img_size = conf.model.img_size
-    train_dl = create_loader(conf.data.train, img_size, 'train')
-    valid_dl = create_loader(conf.data.val, img_size, 'val')
+    train_dl = create_loader(conf.data.train, 'train')
+    valid_dl = create_loader(conf.data.val, 'val')
+
+    epochs = conf.train.epochs
+    epoch_length = conf.train.epoch_length
+    if epoch_length < 1:
+        epoch_length = len(train_dl)
 
     device = create_device(conf)
     model = create_model(conf.model).to(device)
     optim = create_optimizer(conf.optimizer, model.parameters())
+
+    lr_scheduler = None
+    if 'lr_schedule' in conf:
+        policy = conf.lr_schedule.strategy
+        if policy == 'one-cycle':
+            lr_scheduler = create_one_cycle_scheduler(
+                conf.lr_schedule, epochs, epoch_length)(optim)
+        elif policy == 'multi-step':
+            raise NotImplementedError()
+        else:
+            raise AttributeError('Unknown lr_schedule: {}'.format(conf.shedule))
 
     metrics = {
         'acc': Accuracy(output_transform=_accuracy_transform),
@@ -241,28 +265,28 @@ def main(conf: DictConfig):
         engine.add_event_handler(iter_complete, log_iter, trainer, name, log_interval)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
 
-    epochs = conf.train.epochs
-    epoch_length = conf.train.epoch_length
-    if epoch_length < 1:
-        epoch_length = len(train_dl)
-
-    if 'schedule' in conf:
-        lr_schedule = conf.schedule.strategy
-        scheduler = None
-        if lr_schedule == 'one-cycle':
-            scheduler = create_one_cycle_scheduler(
-                conf.schedule, epochs, epoch_length)(optim)
-        elif lr_schedule == 'multi-step':
-            print('Yo bro')
-        else:
-            raise AttributeError('Unknown schedule: {}'.format(conf.shedule))
-        if scheduler:
-            trainer.add_event_handler(Events.ITERATION_COMPLETED,
-                                      lambda _: scheduler.step())
-
     trainer.add_event_handler(
         Events.EPOCH_COMPLETED(every=conf.validate.interval),
         lambda _: evaluator.run(valid_dl, epoch_length=5))
+
+    if lr_scheduler:
+        trainer.add_event_handler(Events.ITERATION_COMPLETED, lambda _: lr_scheduler.step())
+
+    to_save = {
+        'trainer': trainer,
+        'model': model,
+        'optimizer': optim,
+        'lr_scheduler': lr_scheduler}
+    make_checkpoint = Checkpoint(to_save, DiskSaver('/tmp/training', create_dir=True))
+    save_events = []
+    checkpoints = conf.train.checkpoints
+    if checkpoints.interval_iteration > 0:
+        save_events.append(Events.ITERATION_COMPLETED(every=checkpoints.interval_iteration))
+    if checkpoints.interval_epoch > 0:
+        save_events.append(Events.EPOCH_COMPLETED(every=checkpoints.interval_epoch))
+    for event in save_events:
+        trainer.add_event_handler(event, make_checkpoint)
+
     trainer.run(train_dl, max_epochs=epochs, epoch_length=epoch_length)
 
 

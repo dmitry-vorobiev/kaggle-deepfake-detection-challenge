@@ -5,7 +5,7 @@ from torch import nn, Tensor, FloatTensor, LongTensor
 from typing import Tuple
 
 from .layers import conv2D, Lambda
-from .ops import image_grad, select
+from .ops import select
 
 AutoEncoderOut = Tuple[FloatTensor, FloatTensor]
 
@@ -50,7 +50,6 @@ class AutoEncoder(nn.Module):
         return nn.Sequential(*main, last, nn.Tanh())
 
     def forward(self, x: FloatTensor, y: LongTensor) -> AutoEncoderOut:
-        x = image_grad(x, n=3, keep_size=True)
         h = self.encoder(x)
         hc = select(h, y)
         x_hat = self.decoder(hc)

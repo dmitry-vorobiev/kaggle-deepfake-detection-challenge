@@ -9,16 +9,16 @@ from typing import Callable, List, Optional, Tuple
 
 from .hdf5 import Transforms
 from .sample import FrameSampler
+from .transforms import no_transforms
 from .utils import pad_torch
 
 
 class ImagesDataset(torch.utils.data.Dataset):
-    def __init__(self, base_path: str, size: Tuple[int, int], 
-                 sampler: FrameSampler,
+    def __init__(self, base_path: str, frames: int, sampler: FrameSampler,
                  transforms: Optional[Transforms] = None,
                  sub_dirs: Optional[List[str]] = None):
         self.base_path = base_path
-        self.size = size
+        self.frames = frames
         self.sampler = sampler
         self.transforms = transforms
         self.df = ImagesDataset._read_annotations(base_path, sub_dirs)
@@ -48,19 +48,16 @@ class ImagesDataset(torch.utils.data.Dataset):
         return pd.concat(parts).reset_index()
     
     @staticmethod
-    def read_folder(path: str, size: int,
-                    sample_fn: Callable[[int], np.ndarray]) -> List[np.ndarray]:
-        img_size = (size, size)
+    def read_folder(path: str, sample_fn: Callable[[int], np.ndarray]) -> List[np.ndarray]:
         images = []
         files = sorted(os.listdir(path))
         total_frames = len(files)
         if total_frames > 0:
-            idxs = sample_fn(total_frames)
-            for i in idxs:
+            indices = sample_fn(total_frames)
+            for i in indices:
                 img_path = os.path.join(path, files[i])
                 img = cv2.imread(img_path, cv2.IMREAD_COLOR)
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img = cv2.resize(img, img_size, interpolation=cv2.INTER_NEAREST)
                 images.append(img)
         return images
         
@@ -68,27 +65,28 @@ class ImagesDataset(torch.utils.data.Dataset):
         return len(self.df)
 
     def __getitem__(self, idx) -> Tuple[Tensor, int]:
-        num_frames, size = self.size
+        num_frames = self.frames
         meta = self.df.iloc[idx]
         label = int(meta.label)
         path = os.path.join(self.base_path, meta.dir, meta.video)
 
         if os.path.isdir(path):
             sample_fn = self.sampler(meta.label)
-            frames = ImagesDataset.read_folder(path, size, sample_fn=sample_fn)
+            frames = ImagesDataset.read_folder(path, sample_fn)
         else:
             print('Dir is missing: {}'.format(path))
             frames = []
 
         if len(frames) > 0:
-            transform_x = self.transforms or torch.from_numpy
+            transform_x = self.transforms or no_transforms
             frames = torch.stack(list(map(transform_x, frames)))
-            pad_amount = num_frames - len(frames)
+            pad_amount = num_frames - frames.size(0)
             if pad_amount > 0:
                 frames = pad_torch(frames, pad_amount, 'start')
             # D, C, H, W -> C, D, H, W
             frames = frames.permute(1, 0, 2, 3)
         else:
-            print('Empty file {}'.format(path))
-            frames = torch.zeros((3, num_frames, size, size), dtype=torch.float32)
+            print('Unable to load images from {}'.format(path))
+            new_idx = np.random.randint(0, len(self))
+            return self[new_idx]
         return frames, label
