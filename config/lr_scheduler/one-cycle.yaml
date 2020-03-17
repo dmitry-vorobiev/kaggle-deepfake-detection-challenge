@@ -1,0 +1,10 @@
+lr_scheduler:
+  class: torch.optim.lr_scheduler.OneCycleLR
+  params:
+    max_lr: 0.001
+    epochs:
+    steps_per_epoch:
+    pct_start: 0.3
+    anneal_strategy: cos
+    base_momentum: 0.85
+    max_momentum: 0.999

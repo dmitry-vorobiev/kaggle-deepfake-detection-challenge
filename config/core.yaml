@@ -1,6 +1,10 @@
+hydra:
+  run:
+    dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
 defaults:
-  - model: bilbo_defaults
-  - lr_schedule: one-cycle
+  - model: detector_defaults
+  - lr_scheduler: one-cycle
   - common_transforms
 
 general:
@@ -37,9 +41,11 @@ optimizer:
   weight_decay: 0
 
 train:
-  epochs: 3
-  epoch_length: -1
+  epochs: 5
+  epoch_length: 100
   checkpoints:
+    load: /media/dmitry/data/outputs/2020-03-17/20-11-27/checkpoint_100.pth
+    base_dir:
     interval_epoch: 1
     interval_iteration: 1000
 

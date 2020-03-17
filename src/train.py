@@ -7,7 +7,7 @@ import torch
 from functools import partial
 from ignite.contrib.handlers import ProgressBar
 from ignite.engine import Engine, Events
-from ignite.handlers import Checkpoint, DiskSaver
+from ignite.handlers import Checkpoint, DiskSaver, TerminateOnNan
 from ignite.metrics import Accuracy, Loss, Metric
 from omegaconf import DictConfig, ListConfig
 from torch import FloatTensor, Tensor
@@ -110,19 +110,6 @@ def create_optimizer(conf: DictConfig, params: Iterable[FloatTensor]) -> torch.o
     return optim
 
 
-def create_one_cycle_scheduler(conf: DictConfig, epochs: int, epoch_length: int):
-    scheduler = partial(
-        torch.optim.lr_scheduler.OneCycleLR,
-        max_lr=conf.max_lr,
-        epochs=epochs,
-        steps_per_epoch=epoch_length,
-        pct_start=conf.pct_start,
-        anneal_strategy=conf.anneal_strategy,
-        base_momentum=conf.base_momentum,
-        max_momentum=conf.max_momentum)
-    return scheduler
-
-
 def humanize_time(timestamp: float) -> str:
     return dt.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
 
@@ -220,6 +207,10 @@ def _nll_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
     return out['y_pred'], out['y_true']
 
 
+def _upd_pbar_iter_from_cp(engine: Engine, pbar: ProgressBar):
+    pbar.n = engine.state.iteration
+
+
 @hydra.main(config_path="../config/core.yaml")
 def main(conf: DictConfig):
     print(conf.pretty())
@@ -227,7 +218,7 @@ def main(conf: DictConfig):
     epoch_length = conf.train.epoch_length
 
     train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length)
-    valid_dl = create_loader(conf.data.val, 'val')
+    valid_dl = create_loader(conf.data.val, 'val', epoch_length=10)
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
@@ -237,16 +228,13 @@ def main(conf: DictConfig):
     optim = create_optimizer(conf.optimizer, model.parameters())
 
     # TODO: maybe use schedulers from ignite.contrib
-    lr_scheduler = None
-    if 'lr_schedule' in conf:
-        policy = conf.lr_schedule.strategy
-        if policy == 'one-cycle':
-            lr_scheduler = create_one_cycle_scheduler(
-                conf.lr_schedule, epochs, epoch_length)(optim)
-        elif policy == 'multi-step':
-            raise NotImplementedError()
-        else:
-            raise AttributeError('Unknown lr_schedule: {}'.format(conf.shedule))
+    if 'lr_scheduler' in conf.keys():
+        lr_scheduler = hydra.utils.instantiate(
+            conf.lr_scheduler, optim,
+            epochs=epochs,
+            steps_per_epoch=epoch_length)
+    else:
+        lr_scheduler = None
 
     metrics = {
         'acc': Accuracy(output_transform=_accuracy_transform),
@@ -256,38 +244,53 @@ def main(conf: DictConfig):
     evaluator = create_evaluator(model, device, metrics)
 
     log_interval = conf.logging.log_iter_interval
-    iter_complete = Events.ITERATION_COMPLETED(every=log_interval)
+    log_event = Events.ITERATION_COMPLETED(every=log_interval)
+    eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
+    every_iteration = Events.ITERATION_COMPLETED
     pbar = ProgressBar(persist=False)
 
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
-        engine.add_event_handler(iter_complete, log_iter, trainer, pbar, name, log_interval)
+        engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_interval)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, pbar, name)
         pbar.attach(engine, output_transform=lambda out: {'loss': out['loss']})
 
-    trainer.add_event_handler(
-        Events.EPOCH_COMPLETED(every=conf.validate.interval),
-        lambda _: evaluator.run(valid_dl))
+    trainer.add_event_handler(eval_event, lambda _: evaluator.run(valid_dl))
+    trainer.add_event_handler(every_iteration, TerminateOnNan())
 
     if lr_scheduler:
-        trainer.add_event_handler(Events.ITERATION_COMPLETED, lambda _: lr_scheduler.step())
+        trainer.add_event_handler(every_iteration, lambda _: lr_scheduler.step())
 
-    to_save = {
+    cp = conf.train.checkpoints
+    serialize = {
         'trainer': trainer,
         'model': model,
         'optimizer': optim,
-        'lr_scheduler': lr_scheduler}
-    make_checkpoint = Checkpoint(to_save, DiskSaver('/tmp/training', create_dir=True))
+        'lr_scheduler': lr_scheduler
+    }
+
+    if 'load' in cp.keys() and cp.load:
+        trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
+        pbar.log_message("Resume from a checkpoint: {}".format(cp.load))
+        Checkpoint.load_objects(to_load=serialize, checkpoint=torch.load(cp.load))
+
+    save_path = cp.get('base_dir', os.getcwd())
+    saver = DiskSaver(save_path, create_dir=True, require_empty=True)
+    pbar.log_message("Saving checkpoints to {}".format(save_path))
     save_events = []
-    cp = conf.train.checkpoints
     if cp.interval_iteration > 0:
         save_events.append(Events.ITERATION_COMPLETED(every=cp.interval_iteration))
     if cp.interval_epoch > 0:
         save_events.append(Events.EPOCH_COMPLETED(every=cp.interval_epoch))
     for event in save_events:
-        trainer.add_event_handler(event, make_checkpoint)
+        trainer.add_event_handler(event, Checkpoint(serialize, saver))
 
-    trainer.run(train_dl, max_epochs=epochs, epoch_length=epoch_length)
+    try:
+        trainer.run(train_dl, max_epochs=epochs)
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+    pbar.close()
 
 
 if __name__ == '__main__':
