@@ -50,4 +50,4 @@ def act(h: Tensor, y: Tensor) -> Tensor:
     
     # For simplicity, and without losing generality, 
     # we constrain a(x) to be equal to 1
-    return a.clamp_max_(1).ceil_()
+    return a.clamp_max_(1)

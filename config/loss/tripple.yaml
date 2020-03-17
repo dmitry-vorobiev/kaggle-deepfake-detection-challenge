@@ -1,0 +1,6 @@
+loss:
+  class: model.loss.TripleLoss
+  params:
+    act_w: 1.0
+    rec_w: 0.1
+    bce_w: 0.5

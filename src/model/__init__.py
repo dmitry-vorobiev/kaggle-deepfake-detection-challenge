@@ -1,2 +1,2 @@
 from .zoo.common import ModelOut
-from .loss import combined_loss
+from .loss import combined_loss, TripleLoss

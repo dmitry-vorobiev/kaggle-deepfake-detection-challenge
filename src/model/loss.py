@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import FloatTensor, LongTensor, Tensor
-from typing import Tuple
+from typing import Dict
 
 from . import ModelOut
 from .ops import act
@@ -15,7 +15,7 @@ def ones(n: int, device: torch.device) -> Tensor:
     return torch.ones(n, dtype=torch.int64, device=device)
 
 
-def act_loss(x: Tensor, y: LongTensor) -> Tensor:
+def activation_loss(x: Tensor, y: LongTensor) -> Tensor:
     device = x.device
     pos = y.nonzero().reshape(-1)
     neg = (y - 1).nonzero().reshape(-1)
@@ -37,8 +37,32 @@ def act_loss(x: Tensor, y: LongTensor) -> Tensor:
 def combined_loss(out: ModelOut, x: FloatTensor, y: LongTensor) -> Tensor:
     h, x_hat, y_hat = out
     
-    loss1 = act_loss(h, y)
+    loss1 = activation_loss(h, y)
     loss2 = F.l1_loss(x_hat, x, reduction='mean') * 0.1
     loss3 = F.binary_cross_entropy_with_logits(y_hat.squeeze(1), y.float())
     
     return loss1 + loss2 + loss3
+
+
+class TripleLoss:
+    def __init__(self, act_w: int, rec_w: int, bce_w: int):
+        self.act_w = act_w
+        self.rec_w = rec_w
+        self.bce_w = bce_w
+
+    def __call__(self, out: ModelOut, x: FloatTensor, y: LongTensor) -> Dict[str, Tensor]:
+        h, x_hat, y_hat = out
+        act_loss = activation_loss(h, y)
+        rec_loss = F.l1_loss(x_hat, x, reduction='mean')
+        bce_loss = F.binary_cross_entropy_with_logits(
+            y_hat.squeeze(1), y.float())
+        total_loss = (act_loss * self.act_w + rec_loss * self.rec_w +
+                      bce_loss * self.bce_w)
+
+        out = dict(
+            loss=total_loss,
+            act_loss=act_loss,
+            rec_loss=rec_loss,
+            bce_loss=bce_loss
+        )
+        return out

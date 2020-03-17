@@ -5,19 +5,22 @@ import time
 import torch
 
 from functools import partial
+from hydra.utils import instantiate
 from ignite.contrib.handlers import ProgressBar
 from ignite.engine import Engine, Events
 from ignite.handlers import Checkpoint, DiskSaver, TerminateOnNan
 from ignite.metrics import Accuracy, Loss, Metric
 from omegaconf import DictConfig, ListConfig
-from torch import FloatTensor, Tensor
+from torch import nn, FloatTensor, Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset
-from typing import Any, Callable, Dict, Iterable, List, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
-from model import combined_loss, ModelOut
+from model import ModelOut, TripleLoss
 
 Batch = Tuple[Tensor, Tensor]
+GatheredOuts = Dict[str, Union[float, Tensor]]
+Metrics = Dict[str, Any]
 
 
 def read_file_list(conf: DictConfig, title: str) -> List[str]:
@@ -145,17 +148,18 @@ def log_epoch(engine: Engine, trainer: Engine, pbar: ProgressBar, title: str) ->
         cur_time, title, epoch, metrics['acc'], metrics['nll']))
 
 
-def create_trainer(model, optim, device, metrics=None):
+def create_trainer(model: nn.Module, criterion: TripleLoss, optim: Any,
+                   device: torch.device, metrics: Optional[Metrics] = None):
     def _update(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.train()
         optim.zero_grad()
         x, y = prepare_batch(batch, device)
         out = model(x, y)
-        loss = combined_loss(out, x, y)
-        loss.backward()
+        losses = criterion(out, x, y)
+        losses['loss'].backward()
         optim.step()
         engine.state.lr = [p['lr'] for p in optim.param_groups]
-        return gather_outs(batch, out, loss)
+        return gather_outs(batch, out, losses)
 
     engine = Engine(_update)
     if metrics:
@@ -163,14 +167,15 @@ def create_trainer(model, optim, device, metrics=None):
     return engine
 
 
-def create_evaluator(model, device, metrics=None):
+def create_evaluator(model: nn.Module, criterion: TripleLoss, device: torch.device,
+                     metrics: Optional[Metrics] = None):
     def _eval(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.eval()
         with torch.no_grad():
             x, y = prepare_batch(batch, device)
             out = model(x, y)
-            loss = combined_loss(out, x, y)
-        return gather_outs(batch, out, loss)
+            losses = criterion(out, x, y)
+        return gather_outs(batch, out, losses)
 
     engine = Engine(_eval)
     if metrics:
@@ -191,12 +196,18 @@ def prepare_batch(batch: Batch, device: torch.device) -> Batch:
 
 
 def gather_outs(batch: Batch, model_out: ModelOut,
-                loss: FloatTensor) -> Dict[str, Tensor]:
+                loss: Dict[str, Tensor]) -> GatheredOuts:
     y_pred = model_out[-1].detach()
     y_pred = torch.sigmoid(y_pred).squeeze_(1).cpu()
-    y_true = batch[-1].float().cpu()
-    out = {'loss': loss.item(), 'y_pred': y_pred, 'y_true': y_true}
+    out = {k: v.item() for k, v in loss.items()}
+    out['y_pred'] = y_pred
+    out['y_true'] = batch[-1].float().cpu()
     return out
+
+
+def filter_losses(out: GatheredOuts) -> Dict[str, float]:
+    losses = {k: v for k, v in out.items() if 'loss' in k}
+    return losses
 
 
 def _accuracy_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
@@ -218,21 +229,19 @@ def main(conf: DictConfig):
     epoch_length = conf.train.epoch_length
 
     train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length)
-    valid_dl = create_loader(conf.data.val, 'val', epoch_length=10)
+    valid_dl = create_loader(conf.data.val, 'val')
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
 
     device = create_device(conf)
-    model = hydra.utils.instantiate(conf.model).to(device)
+    model = instantiate(conf.model).to(device)
+    loss = instantiate(conf.loss)
     optim = create_optimizer(conf.optimizer, model.parameters())
 
-    # TODO: maybe use schedulers from ignite.contrib
     if 'lr_scheduler' in conf.keys():
-        lr_scheduler = hydra.utils.instantiate(
-            conf.lr_scheduler, optim,
-            epochs=epochs,
-            steps_per_epoch=epoch_length)
+        lr_scheduler = instantiate(
+            conf.lr_scheduler, optim, epochs=epochs, steps_per_epoch=epoch_length)
     else:
         lr_scheduler = None
 
@@ -240,8 +249,8 @@ def main(conf: DictConfig):
         'acc': Accuracy(output_transform=_accuracy_transform),
         'nll': Loss(torch.nn.BCELoss(), output_transform=_nll_transform)
     }
-    trainer = create_trainer(model, optim, device, metrics)
-    evaluator = create_evaluator(model, device, metrics)
+    trainer = create_trainer(model, loss, optim, device, metrics)
+    evaluator = create_evaluator(model, loss, device, metrics)
 
     log_interval = conf.logging.log_iter_interval
     log_event = Events.ITERATION_COMPLETED(every=log_interval)
@@ -253,7 +262,7 @@ def main(conf: DictConfig):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
         engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_interval)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, pbar, name)
-        pbar.attach(engine, output_transform=lambda out: {'loss': out['loss']})
+        pbar.attach(engine, output_transform=filter_losses)
 
     trainer.add_event_handler(eval_event, lambda _: evaluator.run(valid_dl))
     trainer.add_event_handler(every_iteration, TerminateOnNan())
