@@ -3,15 +3,15 @@ import hydra
 import os
 import time
 import torch
-import torchvision.transforms as T
 
 from functools import partial
+from ignite.contrib.handlers import ProgressBar
 from ignite.engine import Engine, Events
 from ignite.handlers import Checkpoint, DiskSaver
 from ignite.metrics import Accuracy, Loss, Metric
 from omegaconf import DictConfig, ListConfig
-from torch import FloatTensor, LongTensor, Tensor
-from torch.utils.data import BatchSampler, DataLoader
+from torch import FloatTensor, Tensor
+from torch.utils.data import BatchSampler, DataLoader, Dataset
 from typing import Any, Callable, Dict, Iterable, List, Tuple, Union
 
 from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
@@ -19,11 +19,6 @@ from model.detector import FakeDetector, DetectorOut
 from model.loss import combined_loss
 
 Batch = Tuple[Tensor, Tensor]
-
-datasets = {
-    'hdf5': HDF5Dataset,
-    'images': ImagesDataset
-}
 
 
 def read_file_list(conf: DictConfig, title: str) -> List[str]:
@@ -61,29 +56,41 @@ def create_transforms(conf: DictConfig) -> Callable[[Any], Tensor]:
     return transforms
 
 
-def create_loader(conf: DictConfig, title: str) -> DataLoader:
-    num_frames = conf.sample.frames
-    sampler = FrameSampler(num_frames,
-                           real_fake_ratio=conf.sample.real_fake_ratio,
-                           p_sparse=conf.sample.sparse_frames_prob)
+def create_dataset(conf: DictConfig, title: str) -> Dataset:
+    datasets = {
+        'hdf5': HDF5Dataset,
+        'images': ImagesDataset
+    }
+    frame_sampler = FrameSampler(conf.sample.frames,
+                                 real_fake_ratio=conf.sample.real_fake_ratio,
+                                 p_sparse=conf.sample.sparse_frames_prob)
     if conf.type not in datasets:
         known_types = ', '.join(map(str, datasets.keys()))
         raise AttributeError(
             "Unknown dataset type: {} in data.{}.type. "
             "Known types are: {}.".format(conf.type, title, known_types))
-    Dataset = datasets[conf.type]
-    ds = Dataset(conf.dir,
-                 frames=conf.sample.frames,
-                 sampler=sampler,
-                 transforms=create_transforms(conf.transforms),
-                 sub_dirs=read_file_list(conf, title))
-    print("Num {} samples: {}".format(title, len(ds)))
+    DatasetImpl = datasets[conf.type]
+    data = DatasetImpl(conf.dir,
+                       frames=conf.sample.frames,
+                       sampler=frame_sampler,
+                       transforms=create_transforms(conf.transforms),
+                       sub_dirs=read_file_list(conf, title))
+    print("Num {} samples: {}".format(title, len(data)))
+    return data
 
-    batch_sampler = BatchSampler(BalancedSampler(ds),
-                                 batch_size=conf.loader.batch_size,
-                                 drop_last=True)
-    num_workers = conf.get('loader.workers', 0)
-    return DataLoader(ds, batch_sampler=batch_sampler, num_workers=num_workers)
+
+def create_loader(conf: DictConfig, title: str, epoch_length=-1) -> DataLoader:
+    data = create_dataset(conf, title)
+    bs = conf.loader.batch_size
+    if epoch_length > 0:
+        num_samples = epoch_length * bs
+        item_sampler = BalancedSampler(data, replacement=True, num_samples=num_samples)
+    else:
+        item_sampler = BalancedSampler(data)
+    batch_sampler = BatchSampler(item_sampler, batch_size=bs, drop_last=True)
+    loader = DataLoader(
+        data, batch_sampler=batch_sampler, num_workers=conf.get('loader.workers', 0))
+    return loader
 
 
 def create_device(conf: DictConfig) -> torch.device:
@@ -135,7 +142,8 @@ def on_epoch_start(engine: Engine):
     engine.state.t0 = time.time()
 
 
-def log_iter(engine: Engine, trainer: Engine, title: str, log_interval: int) -> None:
+def log_iter(engine: Engine, trainer: Engine, pbar: ProgressBar,
+             title: str, log_interval: int) -> None:
     epoch = trainer.state.epoch
     iteration = engine.state.iteration
     stats = dict()
@@ -147,17 +155,17 @@ def log_iter(engine: Engine, trainer: Engine, title: str, log_interval: int) -> 
     t1 = time.time()
     it_time = (t1 - t0) / log_interval
     cur_time = humanize_time(t1)
-    print("[{}][{:.2f} s] {:>5} | ep: {:2d}, it: {:3d}, {}".format(
+    pbar.log_message("[{}][{:.2f} s] {:>5} | ep: {:2d}, it: {:3d}, {}".format(
         cur_time, it_time, title, epoch, iteration, stats))
     engine.state.t0 = t1
 
 
-def log_epoch(engine: Engine, trainer: Engine, title: str) -> None:
+def log_epoch(engine: Engine, trainer: Engine, pbar: ProgressBar, title: str) -> None:
     epoch = trainer.state.epoch
     metrics = engine.state.metrics
     t1 = time.time()
     cur_time = humanize_time(t1)
-    print("[{}] {:>5} | ep: {}, acc: {:.3f}, nll: {:.3f}\n".format(
+    pbar.log_message("[{}] {:>5} | ep: {}, acc: {:.3f}, nll: {:.3f}\n".format(
         cur_time, title, epoch, metrics['acc'], metrics['nll']))
 
 
@@ -226,12 +234,12 @@ def _nll_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
 @hydra.main(config_path="../config/core.yaml")
 def main(conf: DictConfig):
     print(conf.pretty())
-
-    train_dl = create_loader(conf.data.train, 'train')
-    valid_dl = create_loader(conf.data.val, 'val')
-
     epochs = conf.train.epochs
     epoch_length = conf.train.epoch_length
+
+    train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length)
+    valid_dl = create_loader(conf.data.val, 'val')
+
     if epoch_length < 1:
         epoch_length = len(train_dl)
 
@@ -260,10 +268,13 @@ def main(conf: DictConfig):
     log_interval = conf.logging.log_iter_interval
     iter_complete = Events.ITERATION_COMPLETED(every=log_interval)
 
+    pbar = ProgressBar(persist=False)
+    pbar.attach(trainer, output_transform=lambda out: {'loss': out['loss']})
+
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
-        engine.add_event_handler(iter_complete, log_iter, trainer, name, log_interval)
-        engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
+        engine.add_event_handler(iter_complete, log_iter, trainer, pbar, name, log_interval)
+        engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, pbar, name)
 
     trainer.add_event_handler(
         Events.EPOCH_COMPLETED(every=conf.validate.interval),
@@ -279,11 +290,11 @@ def main(conf: DictConfig):
         'lr_scheduler': lr_scheduler}
     make_checkpoint = Checkpoint(to_save, DiskSaver('/tmp/training', create_dir=True))
     save_events = []
-    checkpoints = conf.train.checkpoints
-    if checkpoints.interval_iteration > 0:
-        save_events.append(Events.ITERATION_COMPLETED(every=checkpoints.interval_iteration))
-    if checkpoints.interval_epoch > 0:
-        save_events.append(Events.EPOCH_COMPLETED(every=checkpoints.interval_epoch))
+    cp = conf.train.checkpoints
+    if cp.interval_iteration > 0:
+        save_events.append(Events.ITERATION_COMPLETED(every=cp.interval_iteration))
+    if cp.interval_epoch > 0:
+        save_events.append(Events.EPOCH_COMPLETED(every=cp.interval_epoch))
     for event in save_events:
         trainer.add_event_handler(event, make_checkpoint)
 

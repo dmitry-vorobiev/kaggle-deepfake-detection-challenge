@@ -1,29 +1,30 @@
 import numpy as np
 import torch
 from functools import partial
-from typing import Callable, Tuple
+from torch.utils.data import Dataset, RandomSampler
+from typing import Any, Callable, Union
 
 
 def sparse_frames(n: int, total: int) -> np.ndarray:
-    idxs = np.linspace(0, total, min(n, total), dtype=int, endpoint=False)
-    rnd_shift = np.random.randint(0, (total - idxs[-1]))
-    return idxs + rnd_shift
+    indices = np.linspace(0, total, min(n, total), dtype=int, endpoint=False)
+    rnd_shift = np.random.randint(0, (total - indices[-1]))
+    return indices + rnd_shift
 
 
 def rnd_slice_frames(n: int, total: int, stride=1.) -> np.ndarray:
-    idxs = np.arange(0, total, stride)[:n].astype(np.uint16)
-    rnd_shift = np.random.randint(0, (total - idxs[-1]))
-    return idxs + rnd_shift
+    indices = np.arange(0, total, stride)[:n].astype(np.uint16)
+    rnd_shift = np.random.randint(0, (total - indices[-1]))
+    return indices + rnd_shift
 
 
-class FrameSampler():
+class FrameSampler:
     def __init__(self, num_frames: int, real_fake_ratio: float, 
                  p_sparse: float):
         self.num_frames = num_frames
         self.real_fake_ratio = real_fake_ratio
         self.p_sparse = p_sparse
         
-    def __call__(self, label: Tuple[int, bool]) -> Callable[[int], np.ndarray]:
+    def __call__(self, label: Union[int, bool]) -> Callable[[int], np.ndarray]:
         dice = np.random.rand()
         if dice < self.p_sparse:
             return partial(sparse_frames, self.num_frames)
@@ -37,36 +38,33 @@ class FrameSampler():
             return partial(rnd_slice_frames, self.num_frames, stride=stride)
 
 
-class BalancedSampler(torch.utils.data.RandomSampler):
-    def __init__(self, data_source: torch.utils.data.Dataset, 
-                 replacement=False, num_samples=None):
+class BalancedSampler(RandomSampler):
+    def __init__(self, data_source: Dataset, replacement=False, num_samples=None):
         super().__init__(data_source, replacement, num_samples)
         if not hasattr(data_source, 'df'):
             raise ValueError("DataSource must have a 'df' property")
             
-        if not 'label' in data_source.df: 
+        if 'label' not in data_source.df:
             raise ValueError("DataSource.df must have a 'label' column")
     
     def __iter__(self):
         df = self.data_source.df
         all_labels = df['label'].values
-        uniq_labels, label_freq = np.unique(all_labels, return_counts=True)
+        unique_labels, label_freq = np.unique(all_labels, return_counts=True)
         rev_freq = (len(all_labels) / label_freq)
         shuffle = np.random.permutation
         
-        idxs = []
-        for freq, label in zip(rev_freq, uniq_labels):
+        indices = []
+        for freq, label in zip(rev_freq, unique_labels):
             fraction, times = np.modf(freq)
-            label_idxs = (all_labels == label).nonzero()[0]
+            label_indices = (all_labels == label).nonzero()[0]
             for _ in range(int(times)):
-                label_idxs = shuffle(label_idxs)
-                idxs.append(label_idxs)
+                label_indices = shuffle(label_indices)
+                indices.append(label_indices)
             if fraction > 0.05:
-                label_idxs = shuffle(label_idxs)
-                chunk = int(len(label_idxs) * fraction)
-                idxs.append(label_idxs[:chunk])
-        idxs = np.concatenate(idxs)
-        idxs = shuffle(idxs)[:self.num_samples]
-#         for i in idxs:
-#             yield i 
-        return iter(idxs.tolist())
+                label_indices = shuffle(label_indices)
+                chunk = int(len(label_indices) * fraction)
+                indices.append(label_indices[:chunk])
+        indices = np.concatenate(indices)
+        indices = shuffle(indices)[:self.num_samples]
+        return iter(indices.tolist())

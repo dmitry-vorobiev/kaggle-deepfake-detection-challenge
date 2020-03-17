@@ -82,20 +82,17 @@ class HDF5Dataset(torch.utils.data.Dataset):
         if os.path.isfile(path):
             sample_fn = self.sampler(meta.label)
             frames = HDF5Dataset.read_hdf5(path, sample_fn)
-        else:
-            print('Unable to read {}'.format(path))
-            frames = []
 
-        if len(frames) > 0:
-            transform_x = self.transforms or no_transforms
-            frames = torch.stack(list(map(transform_x, frames)))
-            pad_amount = num_frames - frames.size(0)
-            if pad_amount > 0:
-                frames = pad_torch(frames, pad_amount, 'start')
-            # D, C, H, W -> C, D, H, W
-            frames = frames.permute(1, 0, 2, 3)
-        else:
-            print('Unable to load images from {}'.format(path))
-            new_idx = np.random.randint(0, len(self))
-            return self[new_idx]
-        return frames, label
+            if len(frames) > 0:
+                transform_x = self.transforms or no_transforms
+                frames = torch.stack(list(map(transform_x, frames)))
+                pad_amount = num_frames - frames.size(0)
+                if pad_amount > 0:
+                    frames = pad_torch(frames, pad_amount, 'start')
+                # D, C, H, W -> C, D, H, W
+                frames = frames.permute(1, 0, 2, 3)
+                return frames, label
+
+        print('Unable to load images from {}'.format(path))
+        new_idx = np.random.randint(0, len(self))
+        return self[new_idx]
