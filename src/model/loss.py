@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import FloatTensor, LongTensor, Tensor
 from typing import Tuple
 
-from .detector import DetectorOut
+from . import ModelOut
 from .ops import act
 
 
@@ -34,7 +34,7 @@ def act_loss(x: Tensor, y: LongTensor) -> Tensor:
     return (neg_loss.sum() + pos_loss.sum()) / y.size(0)
 
 
-def combined_loss(out: DetectorOut, x: FloatTensor, y: LongTensor) -> Tensor:
+def combined_loss(out: ModelOut, x: FloatTensor, y: LongTensor) -> Tensor:
     h, x_hat, y_hat = out
     
     loss1 = act_loss(h, y)

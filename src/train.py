@@ -15,8 +15,7 @@ from torch.utils.data import BatchSampler, DataLoader, Dataset
 from typing import Any, Callable, Dict, Iterable, List, Tuple, Union
 
 from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
-from model.detector import FakeDetector, DetectorOut
-from model.loss import combined_loss
+from model import combined_loss, ModelOut
 
 Batch = Tuple[Tensor, Tensor]
 
@@ -100,16 +99,6 @@ def create_device(conf: DictConfig) -> torch.device:
     if isinstance(gpu, ListConfig):
         gpu = gpu[0]
     return torch.device('cuda:{}'.format(gpu))
-
-
-def create_model(conf: DictConfig) -> FakeDetector:
-    model = FakeDetector(
-        img_size=conf.img_size,
-        enc_depth=conf.enc_depth,
-        enc_width=conf.enc_width,
-        mid_layers=list(conf.mid_layers),
-        out_ch=conf.out_ch)
-    return model
 
 
 def create_optimizer(conf: DictConfig, params: Iterable[FloatTensor]) -> torch.optim.Adam:
@@ -214,7 +203,7 @@ def prepare_batch(batch: Batch, device: torch.device) -> Batch:
     return x, y
 
 
-def gather_outs(batch: Batch, model_out: DetectorOut,
+def gather_outs(batch: Batch, model_out: ModelOut,
                 loss: FloatTensor) -> Dict[str, Tensor]:
     y_pred = model_out[-1].detach()
     y_pred = torch.sigmoid(y_pred).squeeze_(1).cpu()
@@ -244,9 +233,10 @@ def main(conf: DictConfig):
         epoch_length = len(train_dl)
 
     device = create_device(conf)
-    model = create_model(conf.model).to(device)
+    model = hydra.utils.instantiate(conf.model).to(device)
     optim = create_optimizer(conf.optimizer, model.parameters())
 
+    # TODO: maybe use schedulers from ignite.contrib
     lr_scheduler = None
     if 'lr_schedule' in conf:
         policy = conf.lr_schedule.strategy
@@ -267,9 +257,7 @@ def main(conf: DictConfig):
 
     log_interval = conf.logging.log_iter_interval
     iter_complete = Events.ITERATION_COMPLETED(every=log_interval)
-
     pbar = ProgressBar(persist=False)
-    # pbar.attach(trainer, output_transform=lambda out: {'loss': out['loss']})
 
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)

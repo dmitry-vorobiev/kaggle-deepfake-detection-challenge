@@ -1,0 +1,8 @@
+model:
+  class: model.zoo.bilbo.Bilbo
+  params:
+    image_shape: [3, 256, 256]
+    enc_depth: 5
+    enc_width: 8
+    fork_depth: 7
+    rnn_width: 64

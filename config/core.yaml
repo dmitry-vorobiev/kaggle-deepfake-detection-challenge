@@ -1,4 +1,5 @@
 defaults:
+  - model: bilbo_defaults
   - lr_schedule: one-cycle
   - common_transforms
 
@@ -14,13 +15,13 @@ data:
     sample:
       frames: 10
       real_fake_ratio: 3.33
-      sparse_frames_prob: 0.75
+      sparse_frames_prob: 0.5
     loader:
       batch_size: 16
       workers: 1
   val:
-    type: images
-    dir: /media/dmitry/other/dfdc-crops/webp_lossy
+    type: hdf5
+    dir: /media/dmitry/other/dfdc-crops/hdf5
     chunks: 0, 1, 2, 3, 4
     sample:
       frames: 10
@@ -30,13 +31,6 @@ data:
       batch_size: 16
       workers: 1
 
-model:
-  img_size: 256
-  enc_depth: 5
-  enc_width: 8
-  mid_layers: [128, 128]
-  out_ch: 128
-
 optimizer:
   lr: 0.001
   betas: [0.9, 0.999]
@@ -44,13 +38,13 @@ optimizer:
 
 train:
   epochs: 3
-  epoch_length: 30
+  epoch_length: -1
   checkpoints:
-    interval_epoch: 5
-    interval_iteration: 2000
+    interval_epoch: 1
+    interval_iteration: 1000
 
 validate:
   interval: 1
 
 logging:
-  log_iter_interval: 5
+  log_iter_interval: 100

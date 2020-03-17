@@ -1,0 +1,8 @@
+model:
+  class: model.zoo.detector.FakeDetector
+  params:
+    img_size: 256
+    enc_depth: 5
+    enc_width: 8
+    mid_layers: [128, 128]
+    out_ch: 128

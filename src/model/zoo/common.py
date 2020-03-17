@@ -4,10 +4,10 @@ from functools import partial
 from torch import nn, Tensor, FloatTensor, LongTensor
 from typing import Tuple
 
-from .layers import conv2D, Lambda
-from .ops import select
+from ..layers import conv2D, Lambda
+from ..ops import select
 
-AutoEncoderOut = Tuple[FloatTensor, FloatTensor]
+ModelOut = Tuple[FloatTensor, FloatTensor, FloatTensor]
 
 
 def encoder_block(in_ch: int, out_ch: int, kernel=3, stride=2, bn=True) -> nn.Module:
@@ -49,7 +49,7 @@ class AutoEncoder(nn.Module):
         last = conv2D(size, out_ch, kernel=3, stride=1)
         return nn.Sequential(*main, last, nn.Tanh())
 
-    def forward(self, x: FloatTensor, y: LongTensor) -> AutoEncoderOut:
+    def forward(self, x: FloatTensor, y: LongTensor) -> Tuple[FloatTensor, FloatTensor]:
         h = self.encoder(x)
         hc = select(h, y)
         x_hat = self.decoder(hc)

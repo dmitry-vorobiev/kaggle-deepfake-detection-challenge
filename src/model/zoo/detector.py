@@ -2,9 +2,9 @@ import torch
 from torch import nn, FloatTensor, LongTensor, Tensor
 from typing import List, Tuple
 
-from .autoencoder import AutoEncoder
-from .layers import conv3D, Lambda
-from .ops import identity, pool_gru
+from .common import AutoEncoder
+from ..layers import conv3D, Lambda
+from ..ops import identity, pool_gru
 
 DetectorOut = Tuple[Tensor, Tensor, Tensor]
 
@@ -44,7 +44,7 @@ class FakeDetector(nn.Module):
 
         elif len(mid_layers) > 0:
             n_mid = len(mid_layers)
-            mid_layers = [emb_ch] + mid_layers
+            mid_layers = [emb_ch] + list(mid_layers)
             out_size = emb_size // 2 ** n_mid
             if not out_size:
                 raise AssertionError('Too many middle layers...')
