@@ -269,16 +269,17 @@ def main(conf: DictConfig):
     iter_complete = Events.ITERATION_COMPLETED(every=log_interval)
 
     pbar = ProgressBar(persist=False)
-    pbar.attach(trainer, output_transform=lambda out: {'loss': out['loss']})
+    # pbar.attach(trainer, output_transform=lambda out: {'loss': out['loss']})
 
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
         engine.add_event_handler(iter_complete, log_iter, trainer, pbar, name, log_interval)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, pbar, name)
+        pbar.attach(engine, output_transform=lambda out: {'loss': out['loss']})
 
     trainer.add_event_handler(
         Events.EPOCH_COMPLETED(every=conf.validate.interval),
-        lambda _: evaluator.run(valid_dl, epoch_length=5))
+        lambda _: evaluator.run(valid_dl))
 
     if lr_scheduler:
         trainer.add_event_handler(Events.ITERATION_COMPLETED, lambda _: lr_scheduler.step())

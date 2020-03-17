@@ -5,8 +5,6 @@ defaults:
 general:
   gpu: 1
 
-test: ${general.gpu}
-
 data:
   train:
     type: hdf5
@@ -20,7 +18,6 @@ data:
     loader:
       batch_size: 16
       workers: 1
-
   val:
     type: images
     dir: /media/dmitry/other/dfdc-crops/webp_lossy
@@ -46,8 +43,8 @@ optimizer:
   weight_decay: 0
 
 train:
-  epochs: 1
-  epoch_length: 100
+  epochs: 3
+  epoch_length: 30
   checkpoints:
     interval_epoch: 5
     interval_iteration: 2000
@@ -56,4 +53,4 @@ validate:
   interval: 1
 
 logging:
-  log_iter_interval: 1
+  log_iter_interval: 5
