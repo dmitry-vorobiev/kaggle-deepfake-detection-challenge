@@ -78,3 +78,8 @@ class Bilbo(nn.Module):
 
         y_hat = self.out(gru_out)
         return hidden, x_rec, y_hat
+
+    def to_y(self, h: Tensor, x_rec: Tensor, y_hat: Tensor):
+        y_pred = y_hat.detach()
+        y_pred = torch.sigmoid(y_pred).squeeze_(1)
+        return y_pred

@@ -3,8 +3,8 @@ hydra:
     dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 defaults:
-  - model: detector
-  - loss: tripple
+  - model: frodo
+  - loss: forensic-transfer
   - lr_scheduler: one-cycle
   - common_transforms
 
@@ -42,17 +42,17 @@ optimizer:
   weight_decay: 0
 
 train:
-  epochs: 5
-  epoch_length: 50
+  epochs: 20
+  epoch_length: 2000
   checkpoints:
     load: null
     base_dir: null
-    interval_epoch: 10
-    interval_iteration: 49
+    interval_epoch: 1
+    interval_iteration: 500
     max_checkpoints: 10
 
 validate:
-  interval: 5
+  interval: 1
 
 logging:
-  log_iter_interval: 1
+  iter_freq: 100

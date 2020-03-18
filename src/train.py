@@ -159,7 +159,7 @@ def create_trainer(model: nn.Module, criterion: TripleLoss, optim: Any,
         losses['loss'].backward()
         optim.step()
         engine.state.lr = [p['lr'] for p in optim.param_groups]
-        return gather_outs(batch, out, losses)
+        return gather_outs(model, batch, out, losses)
 
     engine = Engine(_update)
     if metrics:
@@ -175,7 +175,7 @@ def create_evaluator(model: nn.Module, criterion: TripleLoss, device: torch.devi
             x, y = prepare_batch(batch, device)
             out = model(x, y)
             losses = criterion(out, x, y)
-        return gather_outs(batch, out, losses)
+        return gather_outs(model, batch, out, losses)
 
     engine = Engine(_eval)
     if metrics:
@@ -195,12 +195,10 @@ def prepare_batch(batch: Batch, device: torch.device) -> Batch:
     return x, y
 
 
-def gather_outs(batch: Batch, model_out: ModelOut,
+def gather_outs(model: nn.Module, batch: Batch, model_out: ModelOut,
                 loss: Dict[str, Tensor]) -> GatheredOuts:
-    y_pred = model_out[-1].detach()
-    y_pred = torch.sigmoid(y_pred).squeeze_(1).cpu()
     out = {k: v.item() for k, v in loss.items()}
-    out['y_pred'] = y_pred
+    out['y_pred'] = model.to_y(*model_out).detach().cpu()
     out['y_true'] = batch[-1].float().cpu()
     return out
 
@@ -257,19 +255,17 @@ def main(conf: DictConfig):
             initial_state = lr_scheduler.state_dict()
             trainer.add_event_handler(Events.ITERATION_COMPLETED(every=epoch_length),
                                       lambda _: lr_scheduler.load_state_dict(initial_state))
-            trainer.add_event_handler(Events.ITERATION_COMPLETED(every=epoch_length),
-                                      lambda _: print('RESET SCHEDULE'))
     else:
         lr_scheduler = None
 
-    log_interval = conf.logging.log_iter_interval
-    log_event = Events.ITERATION_COMPLETED(every=log_interval)
+    log_freq = conf.logging.iter_freq
+    log_event = Events.ITERATION_COMPLETED(every=log_freq)
     eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
     pbar = ProgressBar(persist=False)
 
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
-        engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_interval)
+        engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, pbar, name)
         pbar.attach(engine, output_transform=filter_losses)
 
@@ -310,4 +306,5 @@ def main(conf: DictConfig):
 
 
 if __name__ == '__main__':
+    torch.backends.cudnn.benchmark = True
     main()

@@ -85,6 +85,11 @@ class FakeDetector(nn.Module):
 
         return hidden, xs_hat, y_hat
 
+    def to_y(self, h: Tensor, x_rec: Tensor, y_hat: Tensor):
+        y_pred = y_hat.detach()
+        y_pred = torch.sigmoid(y_pred).squeeze_(1)
+        return y_pred
+
 
 def basic_detector_256():
     return FakeDetector(img_size=256, enc_depth=5, enc_width=8, mid_layers=[256, 256], out_ch=128)

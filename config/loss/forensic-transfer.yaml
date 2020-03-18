@@ -1,0 +1,5 @@
+loss:
+  class: model.loss.ForensicTransferLoss
+  params:
+    act_w: 1.0
+    rec_w: 0.1

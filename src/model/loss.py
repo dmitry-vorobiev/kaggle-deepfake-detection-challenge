@@ -1,18 +1,10 @@
 import torch
 import torch.nn.functional as F
 from torch import FloatTensor, LongTensor, Tensor
-from typing import Dict
+from typing import Dict, Tuple
 
 from . import ModelOut
-from .ops import act
-
-
-def zeros(n: int, device: torch.device) -> Tensor:
-    return torch.zeros(n, dtype=torch.int64, device=device)
-
-
-def ones(n: int, device: torch.device) -> Tensor:
-    return torch.ones(n, dtype=torch.int64, device=device)
+from .ops import act, ones, zeros
 
 
 def activation_loss(x: Tensor, y: LongTensor) -> Tensor:
@@ -44,25 +36,34 @@ def combined_loss(out: ModelOut, x: FloatTensor, y: LongTensor) -> Tensor:
     return loss1 + loss2 + loss3
 
 
-class TripleLoss:
-    def __init__(self, act_w: int, rec_w: int, bce_w: int):
+class ForensicTransferLoss:
+    def __init__(self, act_w: int, rec_w: int):
         self.act_w = act_w
         self.rec_w = rec_w
+
+    def __call__(self, out: Tuple[FloatTensor, FloatTensor],
+                 x: FloatTensor, y: LongTensor) -> Dict[str, Tensor]:
+        h, x_hat = out
+        act_loss = activation_loss(h, y)
+        rec_loss = F.l1_loss(x_hat, x, reduction='mean')
+        total_loss = act_loss * self.act_w + rec_loss * self.rec_w
+        out = dict(
+            loss=total_loss,
+            act_loss=act_loss,
+            rec_loss=rec_loss)
+        return out
+
+
+class TripleLoss(ForensicTransferLoss):
+    def __init__(self, act_w: int, rec_w: int, bce_w: int):
+        super(TripleLoss, self).__init__(act_w, rec_w)
         self.bce_w = bce_w
 
     def __call__(self, out: ModelOut, x: FloatTensor, y: LongTensor) -> Dict[str, Tensor]:
         h, x_hat, y_hat = out
-        act_loss = activation_loss(h, y)
-        rec_loss = F.l1_loss(x_hat, x, reduction='mean')
+        out = super().__call__((h, x_hat), x, y)
         bce_loss = F.binary_cross_entropy_with_logits(
             y_hat.squeeze(1), y.float())
-        total_loss = (act_loss * self.act_w + rec_loss * self.rec_w +
-                      bce_loss * self.bce_w)
-
-        out = dict(
-            loss=total_loss,
-            act_loss=act_loss,
-            rec_loss=rec_loss,
-            bce_loss=bce_loss
-        )
+        out['loss'] += bce_loss * self.bce_w
+        out['bce_loss'] = bce_loss
         return out
