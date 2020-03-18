@@ -125,10 +125,10 @@ def log_iter(engine: Engine, trainer: Engine, pbar: ProgressBar,
              title: str, log_interval: int) -> None:
     epoch = trainer.state.epoch
     iteration = engine.state.iteration
-    stats = dict()
+    out = engine.state.output
+    stats = {k: '%.3f' % v for k, v in out.items() if 'loss' in k}
     if hasattr(engine.state, 'lr'):
         stats['lr'] = ', '.join(['%.1e' % val for val in engine.state.lr])
-    stats['loss'] = '%.3f' % engine.state.output['loss']
     stats = ', '.join(['{}: {}'.format(*e) for e in stats.items()])
     t0 = engine.state.t0
     t1 = time.time()
@@ -218,7 +218,7 @@ def _nll_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
     return out['y_pred'], out['y_true']
 
 
-def _upd_pbar_iter_from_cp(engine: Engine, pbar: ProgressBar):
+def _upd_pbar_iter_from_cp(engine: Engine, pbar: ProgressBar) -> None:
     pbar.n = engine.state.iteration
 
 
@@ -239,12 +239,6 @@ def main(conf: DictConfig):
     loss = instantiate(conf.loss)
     optim = create_optimizer(conf.optimizer, model.parameters())
 
-    if 'lr_scheduler' in conf.keys():
-        lr_scheduler = instantiate(
-            conf.lr_scheduler, optim, epochs=epochs, steps_per_epoch=epoch_length)
-    else:
-        lr_scheduler = None
-
     metrics = {
         'acc': Accuracy(output_transform=_accuracy_transform),
         'nll': Loss(torch.nn.BCELoss(), output_transform=_nll_transform)
@@ -252,10 +246,25 @@ def main(conf: DictConfig):
     trainer = create_trainer(model, loss, optim, device, metrics)
     evaluator = create_evaluator(model, loss, device, metrics)
 
+    every_iteration = Events.ITERATION_COMPLETED
+
+    if 'lr_scheduler' in conf.keys():
+        lr_scheduler = instantiate(
+            conf.lr_scheduler, optim, total_steps=epoch_length)
+        trainer.add_event_handler(every_iteration, lambda _: lr_scheduler.step())
+
+        if isinstance(lr_scheduler, torch.optim.lr_scheduler.OneCycleLR):
+            initial_state = lr_scheduler.state_dict()
+            trainer.add_event_handler(Events.ITERATION_COMPLETED(every=epoch_length),
+                                      lambda _: lr_scheduler.load_state_dict(initial_state))
+            trainer.add_event_handler(Events.ITERATION_COMPLETED(every=epoch_length),
+                                      lambda _: print('RESET SCHEDULE'))
+    else:
+        lr_scheduler = None
+
     log_interval = conf.logging.log_iter_interval
     log_event = Events.ITERATION_COMPLETED(every=log_interval)
     eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
-    every_iteration = Events.ITERATION_COMPLETED
     pbar = ProgressBar(persist=False)
 
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
@@ -266,9 +275,6 @@ def main(conf: DictConfig):
 
     trainer.add_event_handler(eval_event, lambda _: evaluator.run(valid_dl))
     trainer.add_event_handler(every_iteration, TerminateOnNan())
-
-    if lr_scheduler:
-        trainer.add_event_handler(every_iteration, lambda _: lr_scheduler.step())
 
     cp = conf.train.checkpoints
     serialize = {
@@ -284,6 +290,7 @@ def main(conf: DictConfig):
         Checkpoint.load_objects(to_load=serialize, checkpoint=torch.load(cp.load))
 
     save_path = cp.get('base_dir', os.getcwd())
+    max_cp = max(cp.get('cp.max_checkpoints', 1), 1)
     saver = DiskSaver(save_path, create_dir=True, require_empty=True)
     pbar.log_message("Saving checkpoints to {}".format(save_path))
     save_events = []
@@ -292,7 +299,7 @@ def main(conf: DictConfig):
     if cp.interval_epoch > 0:
         save_events.append(Events.EPOCH_COMPLETED(every=cp.interval_epoch))
     for event in save_events:
-        trainer.add_event_handler(event, Checkpoint(serialize, saver))
+        trainer.add_event_handler(event, Checkpoint(serialize, saver, n_saved=max_cp))
 
     try:
         trainer.run(train_dl, max_epochs=epochs)

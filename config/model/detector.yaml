@@ -4,5 +4,5 @@ model:
     img_size: 256
     enc_depth: 5
     enc_width: 8
-    mid_layers: [128, 128]
+    mid_layers: [256, 512]
     out_ch: 128

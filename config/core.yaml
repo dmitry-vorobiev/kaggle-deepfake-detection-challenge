@@ -42,16 +42,17 @@ optimizer:
   weight_decay: 0
 
 train:
-  epochs: 2
-  epoch_length: 100
+  epochs: 5
+  epoch_length: 50
   checkpoints:
-    load: # /media/dmitry/data/outputs/2020-03-17/20-45-06/checkpoint_100.pth
-    base_dir:
-    interval_epoch: 1
-    interval_iteration: 1000
+    load: null
+    base_dir: null
+    interval_epoch: 10
+    interval_iteration: 49
+    max_checkpoints: 10
 
 validate:
-  interval: 1
+  interval: 5
 
 logging:
-  log_iter_interval: 100
+  log_iter_interval: 1
