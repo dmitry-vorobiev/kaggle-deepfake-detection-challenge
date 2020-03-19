@@ -2,9 +2,9 @@ import torch
 from torch import nn, FloatTensor, LongTensor, Tensor
 from typing import List, Tuple
 
-from .common import AutoEncoder
-from ..layers import conv3D, Lambda
-from ..ops import identity, pool_gru
+from .common import encoder_block, decoder_block
+from ..layers import conv2D, conv3D, Lambda
+from ..ops import identity, pool_gru, select
 
 DetectorOut = Tuple[Tensor, Tensor, Tensor]
 
@@ -18,11 +18,38 @@ def middle_block(in_ch: int, out_ch: int, kernel=3, stride=2, bn=True) -> nn.Mod
     return nn.Sequential(*layers)
 
 
-class FakeDetector(nn.Module):
+class AutoEncoder(nn.Module):
+    def __init__(self, in_ch: int, depth: int, width: int):
+        super(AutoEncoder, self).__init__()
+        self.encoder = AutoEncoder._build_encoder(in_ch, depth, width)
+        self.decoder = AutoEncoder._build_decoder(in_ch, depth, width)
+
+    @staticmethod
+    def _build_encoder(in_ch: int, depth: int, size: int) -> nn.Module:
+        stem = encoder_block(in_ch, size, stride=1, bn=False)
+        main = [encoder_block(size * 2**i, size * 2**(i+1))
+                for i in range(0, depth - 1)]
+        return nn.Sequential(stem, *main)
+
+    @staticmethod
+    def _build_decoder(out_ch: int, depth: int, size: int) -> nn.Module:
+        main = [decoder_block(size * 2**(i+1), size * 2**i)
+                for i in sorted(range(0, depth - 1), reverse=True)]
+        last = conv2D(size, out_ch, kernel=3, stride=1)
+        return nn.Sequential(*main, last, nn.Tanh())
+
+    def forward(self, x: FloatTensor, y: LongTensor) -> Tuple[FloatTensor, FloatTensor]:
+        h = self.encoder(x)
+        hc = select(h, y)
+        x_hat = self.decoder(hc)
+        return h, x_hat
+
+
+class Gollum(nn.Module):
     def __init__(self, img_size: int, enc_depth: int, enc_width: int,
                  mid_layers: List[int], out_ch: int,
                  pool_size: Tuple[int, int] = None):
-        super(FakeDetector, self).__init__()
+        super(Gollum, self).__init__()
         if img_size % 32:
             raise AttributeError("img_size should be a multiple of 32")
         if out_ch % 2:
@@ -89,8 +116,3 @@ class FakeDetector(nn.Module):
         y_pred = y_hat.detach()
         y_pred = torch.sigmoid(y_pred).squeeze_(1)
         return y_pred
-
-
-def basic_detector_256():
-    return FakeDetector(img_size=256, enc_depth=5, enc_width=8, mid_layers=[256, 256], out_ch=128)
-

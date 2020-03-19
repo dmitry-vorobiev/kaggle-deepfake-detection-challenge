@@ -1,5 +1,5 @@
 model:
-  class: model.zoo.detector.FakeDetector
+  class: model.zoo.gollum.Gollum
   params:
     img_size: 256
     enc_depth: 5

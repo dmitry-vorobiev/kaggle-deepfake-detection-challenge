@@ -55,4 +55,4 @@ validate:
   interval: 1
 
 logging:
-  iter_freq: 5
+  iter_freq: 100

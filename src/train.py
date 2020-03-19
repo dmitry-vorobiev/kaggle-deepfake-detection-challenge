@@ -1,5 +1,6 @@
 import datetime as dt
 import hydra
+import logging
 import os
 import time
 import torch
@@ -139,13 +140,11 @@ def log_iter(engine: Engine, trainer: Engine, pbar: ProgressBar,
     engine.state.t0 = t1
 
 
-def log_epoch(engine: Engine, trainer: Engine, pbar: ProgressBar, title: str) -> None:
+def log_epoch(engine: Engine, trainer: Engine, title: str) -> None:
     epoch = trainer.state.epoch
     metrics = engine.state.metrics
-    t1 = time.time()
-    cur_time = humanize_time(t1)
-    pbar.log_message("[{}] {:>5} | ep: {}, acc: {:.3f}, nll: {:.3f}\n".format(
-        cur_time, title, epoch, metrics['acc'], metrics['nll']))
+    logging.info("{:>5} | ep: {}, acc: {:.3f}, nll: {:.3f}\n".format(
+        title, epoch, metrics['acc'], metrics['nll']))
 
 
 def create_trainer(model: nn.Module, criterion: TripleLoss, optim: Any,
@@ -247,6 +246,7 @@ def main(conf: DictConfig):
     every_iteration = Events.ITERATION_COMPLETED
 
     if 'lr_scheduler' in conf.keys():
+        # TODO: total_steps is wrong, it works only for one-cycle
         lr_scheduler = instantiate(
             conf.lr_scheduler, optim, total_steps=epoch_length)
         trainer.add_event_handler(every_iteration, lambda _: lr_scheduler.step())
@@ -265,7 +265,7 @@ def main(conf: DictConfig):
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
         engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
-        engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, pbar, name)
+        engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
         pbar.attach(engine, output_transform=filter_losses)
 
     trainer.add_event_handler(every_iteration, TerminateOnNan())
@@ -280,11 +280,11 @@ def main(conf: DictConfig):
 
     if 'load' in cp.keys() and cp.load:
         trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
-        pbar.log_message("Resume from a checkpoint: {}".format(cp.load))
+        logging.info("Resume from a checkpoint: {}".format(cp.load))
         Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
 
     save_path = cp.get('base_dir', os.getcwd())
-    print("Saving checkpoints to {}".format(save_path))
+    logging.info("Saving checkpoints to {}".format(save_path))
     max_cp = max(int(cp.get('max_checkpoints', 1)), 1)
     save = DiskSaver(save_path, create_dir=True, require_empty=True)
 

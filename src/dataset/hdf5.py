@@ -1,5 +1,6 @@
 import cv2
 import h5py
+import logging
 import numpy as np
 import os
 import pandas as pd
@@ -13,6 +14,8 @@ from .transforms import no_transforms
 from .utils import pad_torch
 
 Transforms = Callable[[np.ndarray], Tensor]
+
+log = logging.getLogger(__name__)
 
 
 class HDF5Dataset(torch.utils.data.Dataset):
@@ -39,7 +42,7 @@ class HDF5Dataset(torch.utils.data.Dataset):
             chunk_path = Path(base_path)/chunk_dir
             if not chunk_path.is_dir():
                 if not load_all:
-                    print('Invalid dir: %s' % str(chunk_path))
+                    log.warning('Invalid dir: %s' % str(chunk_path))
                 continue
             files = os.listdir(chunk_path)
             df = pd.DataFrame(files, columns=['video'])
@@ -93,6 +96,6 @@ class HDF5Dataset(torch.utils.data.Dataset):
                 frames = frames.permute(1, 0, 2, 3)
                 return frames, label
 
-        print('Unable to load images from {}'.format(path))
+        log.warning('Unable to load images from {}'.format(path))
         new_idx = np.random.randint(0, len(self))
         return self[new_idx]
