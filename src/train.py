@@ -260,7 +260,6 @@ def main(conf: DictConfig):
 
     log_freq = conf.logging.iter_freq
     log_event = Events.ITERATION_COMPLETED(every=log_freq)
-    eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
     pbar = ProgressBar(persist=False)
 
     for engine, name in zip([trainer, evaluator], ['train', 'val']):
@@ -269,11 +268,10 @@ def main(conf: DictConfig):
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, pbar, name)
         pbar.attach(engine, output_transform=filter_losses)
 
-    trainer.add_event_handler(eval_event, lambda _: evaluator.run(valid_dl))
     trainer.add_event_handler(every_iteration, TerminateOnNan())
 
     cp = conf.train.checkpoints
-    serialize = {
+    to_save = {
         'trainer': trainer,
         'model': model,
         'optimizer': optim,
@@ -283,19 +281,26 @@ def main(conf: DictConfig):
     if 'load' in cp.keys() and cp.load:
         trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
         pbar.log_message("Resume from a checkpoint: {}".format(cp.load))
-        Checkpoint.load_objects(to_load=serialize, checkpoint=torch.load(cp.load))
+        Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
 
     save_path = cp.get('base_dir', os.getcwd())
-    max_cp = max(cp.get('cp.max_checkpoints', 1), 1)
-    saver = DiskSaver(save_path, create_dir=True, require_empty=True)
-    pbar.log_message("Saving checkpoints to {}".format(save_path))
-    save_events = []
-    if cp.interval_iteration > 0:
-        save_events.append(Events.ITERATION_COMPLETED(every=cp.interval_iteration))
-    if cp.interval_epoch > 0:
-        save_events.append(Events.EPOCH_COMPLETED(every=cp.interval_epoch))
-    for event in save_events:
-        trainer.add_event_handler(event, Checkpoint(serialize, saver, n_saved=max_cp))
+    print("Saving checkpoints to {}".format(save_path))
+    max_cp = max(int(cp.get('max_checkpoints', 1)), 1)
+    save = DiskSaver(save_path, create_dir=True, require_empty=True)
+
+    make_checkpoint = Checkpoint(to_save, save, n_saved=max_cp)
+    cp_iter = cp.interval_iteration
+    cp_epoch = cp.interval_epoch
+    if cp_iter > 0:
+        save_event = Events.ITERATION_COMPLETED(every=cp_iter)
+        trainer.add_event_handler(save_event, make_checkpoint)
+    if cp_epoch > 0:
+        if cp_iter < 1 or epoch_length % cp_iter:
+            save_event = Events.EPOCH_COMPLETED(every=cp_epoch)
+            trainer.add_event_handler(save_event, make_checkpoint)
+
+    eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
+    trainer.add_event_handler(eval_event, lambda _: evaluator.run(valid_dl))
 
     try:
         trainer.run(train_dl, max_epochs=epochs)
