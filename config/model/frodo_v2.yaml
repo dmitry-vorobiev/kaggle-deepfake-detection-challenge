@@ -1,0 +1,7 @@
+model:
+  class: model.zoo.frodo.FrodoV2
+  params:
+    image_shape: [3, 256, 256]
+    enc_depth: 5
+    enc_width: 8
+    aux_depth: 3
