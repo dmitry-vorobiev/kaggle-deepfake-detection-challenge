@@ -2,22 +2,38 @@ import math
 import torch
 
 from torch import nn, FloatTensor, LongTensor, Tensor
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .common import encoder_block, decoder_block
-from ..layers import conv2D
+from ..layers import conv2D, SpatialAttention
 from ..ops import select, decide
 
 
-def create_enc_blocks(start_width: int, start: int, end: int):
-    layers = [encoder_block(start_width * 2**i, start_width * 2**(i+1))
-              for i in range(start, end)]
+def build_enc_blocks(start_width: int, start: int, end: int,
+                     attention: Optional[List[int]] = None):
+    if attention is None:
+        attention = []
+    layers = []
+    for i in range(start, end):
+        in_ch = start_width * 2**i
+        out_ch = start_width * 2**(i+1)
+        if i in attention:
+            layers.append(SpatialAttention(in_ch))
+        layers.append(encoder_block(in_ch, out_ch))
     return layers
 
 
-def create_dec_blocks(start_width: int, end: int):
-    layers = [decoder_block(start_width * 2 ** (i + 1), start_width * 2 ** i)
-              for i in sorted(range(0, end), reverse=True)]
+def build_dec_blocks(start_width: int, start: int, end: int,
+                     attention: Optional[List[int]] = None):
+    if attention is None:
+        attention = []
+    layers = []
+    for i in sorted(range(start, end), reverse=True):
+        in_ch = start_width * 2**(i+1)
+        out_ch = start_width * 2**i
+        layers.append(decoder_block(in_ch, out_ch))
+        if i in attention:
+            layers.append(SpatialAttention(out_ch))
     return layers
 
 
@@ -40,10 +56,10 @@ class Frodo(nn.Module):
                 " ({}, {})".format(int(max_depth), H, H))
 
         stem = encoder_block(C, enc_width, stride=1, bn=False)
-        encoder_layers = create_enc_blocks(enc_width, 0, enc_depth - 1)
+        encoder_layers = build_enc_blocks(enc_width, 0, enc_depth - 1)
         self.encoder = nn.Sequential(stem, *encoder_layers)
 
-        decoder_layers = create_dec_blocks(enc_width, enc_depth - 1)
+        decoder_layers = build_dec_blocks(enc_width, 0, enc_depth - 1)
         last = conv2D(enc_width, C, kernel=3, stride=1)
         self.decoder = nn.Sequential(*decoder_layers, last, nn.Tanh())
 
@@ -68,8 +84,10 @@ class Frodo(nn.Module):
 
 
 class FrodoV2(nn.Module):
-    def __init__(self, image_shape: Tuple[int, int, int], width: int, enc_depth: int,
-                 aux_depth: int, p_drop: float):
+    def __init__(self, image_shape: Tuple[int, int, int], width: int,
+                 enc_depth: int, aux_depth: int, p_drop: float,
+                 enc_attention: Optional[List[int]] = None,
+                 dec_attention: Optional[List[int]] = None):
         super(FrodoV2, self).__init__()
         C, H, W = image_shape
         if H != W:
@@ -78,25 +96,33 @@ class FrodoV2(nn.Module):
         max_depth = math.log2(H) + 1
         if enc_depth + aux_depth > max_depth:
             raise AttributeError(
-                "enc_depth + aux_depth should be <= {} given the "
-                "image_size ({}, {})".format(int(max_depth), H, H))
+                f"enc_depth + aux_depth should be <= {int(max_depth)} given the "
+                f"image_size ({H}, {H})")
 
         if width % 2:
             raise AttributeError("width must be even number")
 
+        max_att = enc_depth - 2
+        enc_attention = list(enc_attention or [])
+        dec_attention = list(dec_attention or [])
+        if any(filter(lambda x: x > max_att, enc_attention + dec_attention)):
+            raise AttributeError(f"Can't place attention deeper than {max_att} "
+                                 f"given the enc_depth={enc_depth}")
+
         stem = encoder_block(C, width, stride=1, bn=False)
-        encoder_layers = create_enc_blocks(width, 0, enc_depth - 1)
+        encoder_layers = build_enc_blocks(width, 0, enc_depth - 1, enc_attention)
         self.encoder = nn.Sequential(stem, *encoder_layers)
 
-        decoder_layers = create_dec_blocks(width, enc_depth - 1)
+        decoder_layers = build_dec_blocks(width, 0, enc_depth - 1, dec_attention)
         dec_out = conv2D(width, C, kernel=3, stride=1)
         self.decoder = nn.Sequential(*decoder_layers, dec_out, nn.Tanh())
 
         for i in range(2):
-            aux = create_enc_blocks(width // 2, enc_depth - 1, enc_depth - 1 + aux_depth)
-            setattr(self, 'aux_{}'.format(i), nn.Sequential(*aux))
+            aux_branch = build_enc_blocks(
+                width // 2, enc_depth - 1, enc_depth - 1 + aux_depth)
+            setattr(self, f'aux_{i}', nn.Sequential(*aux_branch))
 
-        out_dim = width * 2 ** (enc_depth + aux_depth - 1)
+        out_dim = width * 2 ** (enc_depth - 1 + aux_depth)
         self.aux_out = nn.Sequential(
             nn.Dropout(p=p_drop),
             nn.Linear(out_dim, 1, bias=False))
