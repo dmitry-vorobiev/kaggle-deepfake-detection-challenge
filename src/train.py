@@ -237,7 +237,7 @@ def main(conf: DictConfig):
     epoch_length = conf.train.epoch_length
 
     train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length)
-    valid_dl = create_loader(conf.data.val, 'val', epoch_length=10)
+    valid_dl = create_loader(conf.data.val, 'val')
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
@@ -275,7 +275,7 @@ def main(conf: DictConfig):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
         engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
-        pbar.attach(engine, 'all')
+        pbar.attach(engine, metric_names=loss.keys())
 
     trainer.add_event_handler(every_iteration, TerminateOnNan())
 

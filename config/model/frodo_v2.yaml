@@ -6,5 +6,5 @@ model:
     enc_depth: 5
     aux_depth: 3
     p_drop: 0.1
-    enc_attention: [2]
+    enc_attention: null
     dec_attention: null
