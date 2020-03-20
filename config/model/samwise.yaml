@@ -1,0 +1,9 @@
+model:
+  class: model.zoo.samwise.Samwise
+  params:
+    image_shape: [3, 256, 256]
+    width: 8
+    enc_depth: 5
+    aux_depth: 3
+    p_drop: 0.15
+    wide: False
