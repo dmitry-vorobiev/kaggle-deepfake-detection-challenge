@@ -35,14 +35,11 @@ def image_grad(x: Tensor, n=1, keep_size=False) -> Tensor:
 
 
 def simple_transforms(img_size: int, mean: Mean = None, std: Std = None,
-                      device: Optional[torch.device] = None,
                       hpf_n=-1) -> Callable[[Any], Tensor]:
     resize = T.Lambda(partial(cv2.resize,
                               dsize=(img_size, img_size),
                               interpolation=cv2.INTER_AREA))
     ops = [resize, T.ToTensor()]
-    if device is not None:
-        ops.append(partial(Tensor.to, device))
     if hpf_n > 0:
         ops.append(T.Lambda(partial(image_grad, n=hpf_n, keep_size=True)))
     if mean and std:

@@ -10,18 +10,20 @@ from hydra.utils import instantiate
 from ignite.contrib.handlers import ProgressBar
 from ignite.engine import Engine, Events
 from ignite.handlers import Checkpoint, DiskSaver, TerminateOnNan
-from ignite.metrics import Accuracy, Loss, Metric
+from ignite.metrics import Accuracy, Loss, Metric, RunningAverage
 from omegaconf import DictConfig, ListConfig
 from torch import nn, FloatTensor, Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
-from model import ModelOut, TripleLoss
+from model import ModelOut
 
 Batch = Tuple[Tensor, Tensor]
+Losses = Dict[str, Tensor]
+Criterion = Callable[[ModelOut, Batch], Losses]
 GatheredOuts = Dict[str, Union[float, Tensor]]
-Metrics = Dict[str, Any]
+Metrics = Dict[str, Metric]
 
 
 def read_file_list(conf: DictConfig, title: str) -> List[str]:
@@ -55,7 +57,8 @@ def create_transforms(conf: DictConfig) -> Callable[[Any], Tensor]:
         conf.resize_to,
         mean=conf.mean,
         std=conf.std,
-        hpf_n=conf.hpf_order)
+        hpf_n=conf.hpf_order,
+    )
     return transforms
 
 
@@ -126,8 +129,8 @@ def log_iter(engine: Engine, trainer: Engine, pbar: ProgressBar,
              title: str, log_interval: int) -> None:
     epoch = trainer.state.epoch
     iteration = engine.state.iteration
-    out = engine.state.output
-    stats = {k: '%.3f' % v for k, v in out.items() if 'loss' in k}
+    metrics = engine.state.metrics
+    stats = {k: '%.3f' % v for k, v in metrics.items() if 'loss' in k}
     if hasattr(engine.state, 'lr'):
         stats['lr'] = ', '.join(['%.1e' % val for val in engine.state.lr])
     stats = ', '.join(['{}: {}'.format(*e) for e in stats.items()])
@@ -143,18 +146,19 @@ def log_iter(engine: Engine, trainer: Engine, pbar: ProgressBar,
 def log_epoch(engine: Engine, trainer: Engine, title: str) -> None:
     epoch = trainer.state.epoch
     metrics = engine.state.metrics
-    logging.info("{:>5} | ep: {}, acc: {:.3f}, nll: {:.3f}\n".format(
-        title, epoch, metrics['acc'], metrics['nll']))
+    stats = {k: '%.3f' % metrics[k] for k in ['acc', 'nll']}
+    stats = ', '.join(['{}: {}'.format(*e) for e in stats.items()])
+    logging.info("{:>5} | ep: {}, {}".format(title, epoch, stats))
 
 
-def create_trainer(model: nn.Module, criterion: TripleLoss, optim: Any,
+def create_trainer(model: nn.Module, criterion: Criterion, optim: Any,
                    device: torch.device, metrics: Optional[Metrics] = None):
-    def _update(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
+    def _update(e: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.train()
         optim.zero_grad()
-        x, y = prepare_batch(batch, device)
-        out = model(x, y)
-        losses = criterion(out, x, y)
+        batch = prepare_batch(batch, device)
+        out = model(*batch)
+        losses = criterion(out, batch)
         losses['loss'].backward()
         optim.step()
         engine.state.lr = [p['lr'] for p in optim.param_groups]
@@ -166,15 +170,15 @@ def create_trainer(model: nn.Module, criterion: TripleLoss, optim: Any,
     return engine
 
 
-def create_evaluator(model: nn.Module, criterion: TripleLoss, device: torch.device,
-                     metrics: Optional[Metrics] = None):
-    def _eval(engine: Engine, batch: Batch) -> Dict[str, Tensor]:
+def create_evaluator(model: nn.Module, criterion: Criterion,
+                     device: torch.device, metrics: Optional[Metrics] = None):
+    def _eval(e: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.eval()
         with torch.no_grad():
-            x, y = prepare_batch(batch, device)
-            out = model(x, y)
-            losses = criterion(out, x, y)
-        return gather_outs(model, batch, out, losses)
+            batch = prepare_batch(batch, device)
+            outs = model(*batch)
+            losses = criterion(outs, batch)
+        return gather_outs(model, batch, outs, losses)
 
     engine = Engine(_eval)
     if metrics:
@@ -182,7 +186,7 @@ def create_evaluator(model: nn.Module, criterion: TripleLoss, device: torch.devi
     return engine
 
 
-def add_metrics(engine: Engine, metrics: Dict[str, Metric]):
+def add_metrics(engine: Engine, metrics: Metrics):
     for name, metric in metrics.items():
         metric.attach(engine, name)
 
@@ -196,23 +200,30 @@ def prepare_batch(batch: Batch, device: torch.device) -> Batch:
 
 def gather_outs(model: nn.Module, batch: Batch, model_out: ModelOut,
                 loss: Dict[str, Tensor]) -> GatheredOuts:
-    out = {k: v.item() for k, v in loss.items()}
+    out = dict(loss)
     out['y_pred'] = model.to_y(*model_out).detach().cpu()
     out['y_true'] = batch[-1].float().cpu()
     return out
 
 
-def filter_losses(out: GatheredOuts) -> Dict[str, float]:
-    losses = {k: v for k, v in out.items() if 'loss' in k}
-    return losses
+def create_metrics(keys: List[str], device: torch.device) -> Metrics:
+    def _acc_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        return (out['y_pred'] >= 0.5).float(), out['y_true']
 
+    def _nll_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
+        return out['y_pred'], out['y_true']
 
-def _accuracy_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-    return (out['y_pred'] >= 0.5).float(), out['y_true']
+    def _out_transform(key: str):
+        return lambda out: out[key]
 
-
-def _nll_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-    return out['y_pred'], out['y_true']
+    metrics = {key: RunningAverage(output_transform=_out_transform(key),
+                                   device=device)
+               for key in keys}
+    metrics['acc'] = Accuracy(output_transform=_acc_transform, device=device)
+    metrics['nll'] = Loss(torch.nn.BCELoss(),
+                          output_transform=_nll_transform,
+                          device=device)
+    return metrics
 
 
 def _upd_pbar_iter_from_cp(engine: Engine, pbar: ProgressBar) -> None:
@@ -226,20 +237,18 @@ def main(conf: DictConfig):
     epoch_length = conf.train.epoch_length
 
     train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length)
-    valid_dl = create_loader(conf.data.val, 'val')
+    valid_dl = create_loader(conf.data.val, 'val', epoch_length=10)
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
 
     device = create_device(conf)
     model = instantiate(conf.model).to(device)
+    print(model)
     loss = instantiate(conf.loss)
     optim = create_optimizer(conf.optimizer, model.parameters())
 
-    metrics = {
-        'acc': Accuracy(output_transform=_accuracy_transform),
-        'nll': Loss(torch.nn.BCELoss(), output_transform=_nll_transform)
-    }
+    metrics = create_metrics(loss.keys(), device)
     trainer = create_trainer(model, loss, optim, device, metrics)
     evaluator = create_evaluator(model, loss, device, metrics)
 
@@ -266,7 +275,7 @@ def main(conf: DictConfig):
         engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
         engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
         engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
-        pbar.attach(engine, output_transform=filter_losses)
+        pbar.attach(engine, 'all')
 
     trainer.add_event_handler(every_iteration, TerminateOnNan())
 
