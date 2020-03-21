@@ -1,8 +1,9 @@
 import numpy as np
-import torch
+import torch.distributed as dist
+
 from functools import partial
-from torch.utils.data import Dataset, RandomSampler
-from typing import Any, Callable, Union
+from torch.utils.data import Sampler, Dataset
+from typing import Callable, Union
 
 
 def sparse_frames(n: int, total: int) -> np.ndarray:
@@ -38,33 +39,61 @@ class FrameSampler:
             return partial(rnd_slice_frames, self.num_frames, stride=stride)
 
 
-class BalancedSampler(RandomSampler):
-    def __init__(self, data_source: Dataset, replacement=False, num_samples=None):
-        super().__init__(data_source, replacement, num_samples)
+class BalancedSampler(Sampler):
+    def __init__(self, data_source: Dataset, num_samples=None,
+                 rank=None, num_replicas=None):
+        super().__init__(data_source)
         if not hasattr(data_source, 'df'):
             raise ValueError("DataSource must have a 'df' property")
-            
         if 'label' not in data_source.df:
             raise ValueError("DataSource.df must have a 'label' column")
-    
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            rank = dist.get_rank()
+
+        self.df = data_source.df
+        self.num_samples = num_samples
+        self.rank = rank
+        self.num_replicas = num_replicas
+        self.epoch = 0
+
+    def __len__(self):
+        return self.num_samples or len(self.df)
+
     def __iter__(self):
-        df = self.data_source.df
-        all_labels = df['label'].values
-        unique_labels, label_freq = np.unique(all_labels, return_counts=True)
-        rev_freq = (len(all_labels) / label_freq)
+        np.random.seed(self.epoch)
+        labels = self.df['label'].values
+        unique_labels, label_freq = np.unique(labels, return_counts=True)
+        rev_freq = (len(labels) / label_freq)
         shuffle = np.random.permutation
-        
-        indices = []
+
+        sampled = []
         for freq, label in zip(rev_freq, unique_labels):
             fraction, times = np.modf(freq)
-            label_indices = (all_labels == label).nonzero()[0]
+            idxs = (labels == label).nonzero()[0]
+
+            if self.num_replicas > 1:
+                offset = self.rank
+                chunk_size = len(idxs) // self.num_replicas
+                start = chunk_size * offset
+                end = chunk_size * (offset + 1)
+                idxs = idxs[start:end]
+
             for _ in range(int(times)):
-                label_indices = shuffle(label_indices)
-                indices.append(label_indices)
+                idxs = shuffle(idxs)
+                sampled.append(idxs)
             if fraction > 0.05:
-                label_indices = shuffle(label_indices)
-                chunk = int(len(label_indices) * fraction)
-                indices.append(label_indices[:chunk])
-        indices = np.concatenate(indices)
-        indices = shuffle(indices)[:self.num_samples]
+                idxs = shuffle(idxs)
+                chunk = int(len(idxs) * fraction)
+                sampled.append(idxs[:chunk])
+        indices = np.concatenate(sampled)
+        indices = shuffle(indices)[:len(self)]
         return iter(indices.tolist())
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch

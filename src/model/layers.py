@@ -4,17 +4,17 @@ from torch import nn, Tensor
 from typing import Any, Callable
 
 
-def conv2D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=True, a=0) -> nn.Conv2d:
+def conv2D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=False, a=0) -> nn.Conv2d:
     pad = kernel // 2
     conv = nn.Conv2d(in_ch, out_ch, kernel_size=kernel, stride=stride,
                      padding=pad, bias=bias)
     nn.init.kaiming_normal_(conv.weight, a=a)
     if bias:
-        conv.bias.data.zero_()
+        nn.init.constant_(conv.bias, 0)
     return conv
 
 
-def conv3D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=True, a=0) -> nn.Conv3d:
+def conv3D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=False, a=0) -> nn.Conv3d:
     pad = kernel // 2
     conv = nn.Conv3d(in_ch, out_ch,
                      kernel_size=(1, kernel, kernel),
@@ -23,7 +23,7 @@ def conv3D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=True, a=0) -> nn.Co
                      bias=bias)
     nn.init.kaiming_normal_(conv.weight, a=a)
     if bias:
-        conv.bias.data.zero_()
+        nn.init.constant_(conv.bias, 0)
     return conv
 
 

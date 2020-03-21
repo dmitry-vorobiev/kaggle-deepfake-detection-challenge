@@ -1,15 +1,25 @@
 hydra:
   run:
     dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job_logging:
+    handlers:
+      file:
+        filename: ${hydra.job.name}_${distributed.local_rank}.log
 
 defaults:
-  - model: frodo_v2
+  - model: samwise
   - loss: tripple
   - lr_scheduler: one-cycle
   - common_transforms
 
 general:
   gpu: 1
+  seed: 333
+
+distributed:
+  backend: null
+  local_rank: 0
+  url: env://
 
 data:
   train:
@@ -21,6 +31,7 @@ data:
       frames: 10
       real_fake_ratio: 3.33
       sparse_frames_prob: 0.5
+    # loader setting are per each GPU
     loader:
       batch_size: 16
       workers: 1
@@ -40,10 +51,11 @@ optimizer:
   lr: 0.001
   betas: [0.9, 0.999]
   weight_decay: 0
+  step_interval: 2
 
 train:
   epochs: 100
-  epoch_length: 5000
+  epoch_length: 2000
   checkpoints:
     load: null
     base_dir: null
