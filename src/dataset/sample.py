@@ -1,4 +1,6 @@
 import numpy as np
+import torch.distributed as dist
+
 from functools import partial
 from torch.utils.data import Sampler, Dataset
 from typing import Callable, Union
@@ -39,35 +41,44 @@ class FrameSampler:
 
 class BalancedSampler(Sampler):
     def __init__(self, data_source: Dataset, num_samples=None,
-                 replica_id=0, num_replicas=-1):
+                 rank=None, num_replicas=None):
         super().__init__(data_source)
         if not hasattr(data_source, 'df'):
             raise ValueError("DataSource must have a 'df' property")
         if 'label' not in data_source.df:
             raise ValueError("DataSource.df must have a 'label' column")
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            rank = dist.get_rank()
 
         self.df = data_source.df
         self.num_samples = num_samples
-        self.replica_id = replica_id
+        self.rank = rank
         self.num_replicas = num_replicas
+        self.epoch = 0
 
     def __len__(self):
         return self.num_samples or len(self.df)
 
     def __iter__(self):
+        np.random.seed(self.epoch)
         labels = self.df['label'].values
-
         unique_labels, label_freq = np.unique(labels, return_counts=True)
         rev_freq = (len(labels) / label_freq)
         shuffle = np.random.permutation
-        
+
         sampled = []
         for freq, label in zip(rev_freq, unique_labels):
             fraction, times = np.modf(freq)
             idxs = (labels == label).nonzero()[0]
 
             if self.num_replicas > 1:
-                offset = self.replica_id
+                offset = self.rank
                 chunk_size = len(idxs) // self.num_replicas
                 start = chunk_size * offset
                 end = chunk_size * (offset + 1)
@@ -83,3 +94,6 @@ class BalancedSampler(Sampler):
         indices = np.concatenate(sampled)
         indices = shuffle(indices)[:len(self)]
         return iter(indices.tolist())
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch

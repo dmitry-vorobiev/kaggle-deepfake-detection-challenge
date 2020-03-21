@@ -6,105 +6,25 @@ import time
 import torch
 import torch.distributed as dist
 
-from functools import partial
 from hydra.utils import instantiate
 from ignite.contrib.handlers import ProgressBar
 from ignite.engine import Engine, Events
 from ignite.handlers import Checkpoint, DiskSaver, TerminateOnNan
 from ignite.metrics import Accuracy, Loss, Metric, RunningAverage
 from ignite.utils import convert_tensor
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig
 from torch import nn, FloatTensor, Tensor
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import BatchSampler, DataLoader, Dataset
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
-from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
 from model import ModelOut
+from utils import create_train_loader, create_val_loader
 
 Batch = Tuple[Tensor, Tensor]
 Losses = Dict[str, Tensor]
 Criterion = Callable[[ModelOut, Batch], Losses]
 GatheredOuts = Dict[str, Union[float, Tensor]]
 Metrics = Dict[str, Metric]
-
-
-def read_file_list(conf: DictConfig, title: str) -> List[str]:
-    dirs = []
-    if 'chunks' in conf.keys():
-        chunks = conf.chunks
-        if isinstance(chunks, int):
-            chunks = [chunks]
-        elif isinstance(chunks, str):
-            interval = list(map(str.strip, chunks.split('-')))
-            if len(interval) == 2:
-                interval = map(int, interval)
-                chunks = list(range(*interval))
-            elif len(interval) < 2:
-                chunks = list(map(str.strip, chunks.split(',')))
-            else:
-                raise AttributeError(
-                    "Config: incorrect format for 'data.{}.chunks'".format(title))
-        for c in chunks:
-            dirs.append('dfdc_train_part_{}'.format(c))
-    if 'dir_list' in conf.keys() and len(conf.dir_list):
-        with open(conf.dir_list) as h:
-            path = h.readline()
-            if os.path.isdir(path):
-                dirs.append(path)
-    return dirs
-
-
-def create_transforms(conf: DictConfig) -> Callable[[Any], Tensor]:
-    transforms = simple_transforms(
-        conf.resize_to,
-        mean=conf.mean,
-        std=conf.std,
-        hpf_n=conf.hpf_order,
-    )
-    return transforms
-
-
-def create_dataset(conf: DictConfig, title: str) -> Dataset:
-    datasets = {
-        'hdf5': HDF5Dataset,
-        'images': ImagesDataset
-    }
-    frame_sampler = FrameSampler(conf.sample.frames,
-                                 real_fake_ratio=conf.sample.real_fake_ratio,
-                                 p_sparse=conf.sample.sparse_frames_prob)
-    if conf.type not in datasets:
-        known_types = ', '.join(map(str, datasets.keys()))
-        raise AttributeError(
-            "Unknown dataset type: {} in data.{}.type. "
-            "Known types are: {}.".format(conf.type, title, known_types))
-    DatasetImpl = datasets[conf.type]
-    data = DatasetImpl(conf.dir,
-                       frames=conf.sample.frames,
-                       sampler=frame_sampler,
-                       transforms=create_transforms(conf.transforms),
-                       sub_dirs=read_file_list(conf, title))
-    print("Num {} samples: {}".format(title, len(data)))
-    return data
-
-
-def create_loader(conf: DictConfig, title: str, epoch_length=-1,
-                  replica_id=-1, num_replicas=-1) -> DataLoader:
-    data = create_dataset(conf, title)
-    bs = conf.loader.batch_size
-    kwargs = dict()
-    if epoch_length > 0:
-        kwargs['num_samples'] = epoch_length * bs
-    if num_replicas > 1:
-        kwargs['replica_id'] = replica_id
-        kwargs['num_replicas'] = num_replicas
-    item_sampler = BalancedSampler(data, **kwargs)
-    batch_sampler = BatchSampler(item_sampler, batch_size=bs, drop_last=True)
-    num_workers = conf.get('loader.workers', 0)
-    loader = DataLoader(data,
-                        batch_sampler=batch_sampler,
-                        num_workers=num_workers)
-    return loader
 
 
 def create_optimizer(conf: DictConfig, params: Iterable[FloatTensor]) -> torch.optim.Adam:
@@ -255,7 +175,7 @@ def run(conf: DictConfig):
         torch.cuda.set_device(local_rank)
         num_replicas = dist.get_world_size()
         epoch_length = epoch_length // num_replicas
-        loader_args = dict(replica_id=local_rank, num_replicas=num_replicas)
+        loader_args = dict(rank=rank, num_replicas=num_replicas)
     else:
         rank = 0
         torch.cuda.set_device(conf.general.gpu)
@@ -264,9 +184,8 @@ def run(conf: DictConfig):
     device = torch.device('cuda')
     torch.manual_seed(conf.general.seed)
 
-    train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length,
-                             **loader_args)
-    valid_dl = create_loader(conf.data.val, 'val', **loader_args)
+    train_dl = create_train_loader(conf.data.train, epoch_length=epoch_length, **loader_args)
+    valid_dl = create_val_loader(conf.data.val, **loader_args)
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
@@ -342,6 +261,12 @@ def run(conf: DictConfig):
 
     if 'load' in cp.keys() and cp.load:
         Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
+
+    if distributed:
+        sampler = train_dl.sampler
+        assert sampler is not None
+        trainer.add_event_handler(
+            Events.EPOCH_STARTED, lambda e: sampler.set_epoch(e.state.epoch - 1))
 
     def run_validation(e: Engine):
         torch.cuda.synchronize(device)
