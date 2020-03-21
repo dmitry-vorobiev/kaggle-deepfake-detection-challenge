@@ -1,6 +1,6 @@
 import numpy as np
 from functools import partial
-from torch.utils.data import RandomSampler, Dataset
+from torch.utils.data import Sampler, Dataset
 from typing import Callable, Union
 
 # from .images import ImagesDataset
@@ -40,20 +40,20 @@ class FrameSampler:
             return partial(rnd_slice_frames, self.num_frames, stride=stride)
 
 
-class BalancedSampler(RandomSampler):
-    def __init__(self, data_source: Dataset, replacement=False, num_samples=None,
+class BalancedSampler(Sampler):
+    def __init__(self, data_source: Dataset, num_samples=None,
                  replica_id=0, num_replicas=-1):
-        super().__init__(data_source, replacement, num_samples)
+        super().__init__(data_source)
         if not hasattr(data_source, 'df'):
             raise ValueError("DataSource must have a 'df' property")
         if 'label' not in data_source.df:
             raise ValueError("DataSource.df must have a 'label' column")
 
-        df = data_source.df
-        if num_replicas < 2:
-            self.df = df
-        else:
-            labels = df['label'].values
+        self.df = data_source.df
+        self._num_samples = num_samples
+
+        if num_replicas > 1:
+            labels = self.df['label'].values
             indices = []
             for label in np.unique(labels):
                 label_indices = (labels == label).nonzero()[0]
@@ -62,7 +62,16 @@ class BalancedSampler(RandomSampler):
                 end = chunk_size * (replica_id + 1)
                 indices.append(label_indices[start:end])
             indices = np.concatenate(indices)
-            self.df = df.iloc[indices]
+            self.df = self.df.iloc[indices]
+
+    @property
+    def num_samples(self):
+        if self._num_samples is None:
+            return len(self.df)
+        return self._num_samples
+
+    def __len__(self):
+        return self.num_samples
 
     def __iter__(self):
         all_labels = self.df['label'].values

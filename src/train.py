@@ -93,7 +93,6 @@ def create_loader(conf: DictConfig, title: str, epoch_length=-1,
     bs = conf.loader.batch_size
     kwargs = dict()
     if epoch_length > 0:
-        kwargs['replacement'] = True
         kwargs['num_samples'] = epoch_length * bs
     if num_replicas > 1:
         kwargs['replica_id'] = replica_id
@@ -252,8 +251,8 @@ def run(conf: DictConfig):
         torch.cuda.set_device(local_rank)
         device = 'cuda'
         num_replicas = dist.get_world_size()
-        loader_args = dict(replica_id=local_rank, num_replicas=num_replicas)
         epoch_length = epoch_length // num_replicas
+        loader_args = dict(replica_id=local_rank, num_replicas=num_replicas)
     else:
         rank = 0
         device = create_device(conf)
@@ -271,8 +270,8 @@ def run(conf: DictConfig):
     if distributed:
         model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
         model.to_y = model.module.to_y
-    # if local_rank == 0:
-    #     print(model)
+    if rank == 0:
+        print(model)
     loss = instantiate(conf.loss)
     optim = create_optimizer(conf.optimizer, model.parameters())
 
