@@ -87,14 +87,18 @@ def create_dataset(conf: DictConfig, title: str) -> Dataset:
     return data
 
 
-def create_loader(conf: DictConfig, title: str, epoch_length=-1) -> DataLoader:
+def create_loader(conf: DictConfig, title: str, epoch_length=-1,
+                  replica_id=-1, num_replicas=-1) -> DataLoader:
     data = create_dataset(conf, title)
     bs = conf.loader.batch_size
+    kwargs = dict()
     if epoch_length > 0:
-        num_samples = epoch_length * bs
-        item_sampler = BalancedSampler(data, replacement=True, num_samples=num_samples)
-    else:
-        item_sampler = BalancedSampler(data)
+        kwargs['replacement'] = True
+        kwargs['num_samples'] = epoch_length * bs
+    if num_replicas > 1:
+        kwargs['replica_id'] = replica_id
+        kwargs['num_replicas'] = num_replicas
+    item_sampler = BalancedSampler(data, **kwargs)
     batch_sampler = BatchSampler(item_sampler, batch_size=bs, drop_last=True)
     loader = DataLoader(
         data, batch_sampler=batch_sampler, num_workers=conf.get('loader.workers', 0))
@@ -233,26 +237,32 @@ def _upd_pbar_iter_from_cp(engine: Engine, pbar: ProgressBar) -> None:
 
 
 def run(conf: DictConfig):
+    epochs = conf.train.epochs
+    epoch_length = conf.train.epoch_length
+
     dist_conf = conf.distributed
     local_rank = dist_conf.local_rank
     backend = dist_conf.backend
     distributed = backend is not None
+
     if local_rank == 0:
         print(conf.pretty())
     if distributed:
+        rank = dist.get_rank()
         torch.cuda.set_device(local_rank)
         device = 'cuda'
+        num_replicas = dist.get_world_size()
+        loader_args = dict(replica_id=local_rank, num_replicas=num_replicas)
+        epoch_length = epoch_length // num_replicas
     else:
+        rank = 0
         device = create_device(conf)
-    rank = dist.get_rank() if distributed else 0
-    # TODO: why add rank?
-    torch.manual_seed(conf.general.seed + rank)
+        loader_args = dict()
+    torch.manual_seed(conf.general.seed)
 
-    epochs = conf.train.epochs
-    epoch_length = conf.train.epoch_length
-
-    train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length)
-    valid_dl = create_loader(conf.data.val, 'val')
+    train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length,
+                             **loader_args)
+    valid_dl = create_loader(conf.data.val, 'val', **loader_args)
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
@@ -355,7 +365,7 @@ def main(conf: DictConfig):
 
     if distributed:
         dist.init_process_group(backend, init_method=dist_conf.url)
-        if local_rank > -1:
+        if local_rank == 0:
             print("\nDistributed setting:")
             print("\tbackend: {}".format(dist.get_backend()))
             print("\tworld size: {}".format(dist.get_world_size()))

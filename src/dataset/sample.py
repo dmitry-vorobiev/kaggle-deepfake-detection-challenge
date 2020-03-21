@@ -1,8 +1,10 @@
 import numpy as np
-import torch
 from functools import partial
-from torch.utils.data import Dataset, RandomSampler
-from typing import Any, Callable, Union
+from torch.utils.data import RandomSampler, Dataset
+from typing import Callable, Union
+
+# from .images import ImagesDataset
+# from .hdf5 import HDF5Dataset
 
 
 def sparse_frames(n: int, total: int) -> np.ndarray:
@@ -39,17 +41,31 @@ class FrameSampler:
 
 
 class BalancedSampler(RandomSampler):
-    def __init__(self, data_source: Dataset, replacement=False, num_samples=None):
+    def __init__(self, data_source: Dataset, replacement=False, num_samples=None,
+                 replica_id=0, num_replicas=-1):
         super().__init__(data_source, replacement, num_samples)
         if not hasattr(data_source, 'df'):
             raise ValueError("DataSource must have a 'df' property")
-            
         if 'label' not in data_source.df:
             raise ValueError("DataSource.df must have a 'label' column")
-    
+
+        df = data_source.df
+        if num_replicas < 2:
+            self.df = df
+        else:
+            labels = df['label'].values
+            indices = []
+            for label in np.unique(labels):
+                label_indices = (labels == label).nonzero()[0]
+                chunk_size = len(label_indices) // num_replicas
+                start = chunk_size * replica_id
+                end = chunk_size * (replica_id + 1)
+                indices.append(label_indices[start:end])
+            indices = np.concatenate(indices)
+            self.df = df.iloc[indices]
+
     def __iter__(self):
-        df = self.data_source.df
-        all_labels = df['label'].values
+        all_labels = self.df['label'].values
         unique_labels, label_freq = np.unique(all_labels, return_counts=True)
         rev_freq = (len(all_labels) / label_freq)
         shuffle = np.random.permutation

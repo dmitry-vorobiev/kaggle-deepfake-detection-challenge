@@ -27,6 +27,7 @@ data:
       frames: 10
       real_fake_ratio: 3.33
       sparse_frames_prob: 0.5
+    # loader setting are per each GPU
     loader:
       batch_size: 16
       workers: 1
