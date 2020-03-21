@@ -12,6 +12,7 @@ from ignite.contrib.handlers import ProgressBar
 from ignite.engine import Engine, Events
 from ignite.handlers import Checkpoint, DiskSaver, TerminateOnNan
 from ignite.metrics import Accuracy, Loss, Metric, RunningAverage
+from ignite.utils import convert_tensor
 from omegaconf import DictConfig, ListConfig
 from torch import nn, FloatTensor, Tensor
 from torch.nn.parallel import DistributedDataParallel
@@ -99,18 +100,11 @@ def create_loader(conf: DictConfig, title: str, epoch_length=-1,
         kwargs['num_replicas'] = num_replicas
     item_sampler = BalancedSampler(data, **kwargs)
     batch_sampler = BatchSampler(item_sampler, batch_size=bs, drop_last=True)
-    loader = DataLoader(
-        data, batch_sampler=batch_sampler, num_workers=conf.get('loader.workers', 0))
+    num_workers = conf.get('loader.workers', 0)
+    loader = DataLoader(data,
+                        batch_sampler=batch_sampler,
+                        num_workers=num_workers)
     return loader
-
-
-def create_device(conf: DictConfig) -> torch.device:
-    if 'gpu' not in conf.general.keys():
-        return torch.device('cpu')
-    gpu = conf.general.gpu
-    if isinstance(gpu, ListConfig):
-        gpu = gpu[0]
-    return torch.device('cuda:{}'.format(gpu))
 
 
 def create_optimizer(conf: DictConfig, params: Iterable[FloatTensor]) -> torch.optim.Adam:
@@ -164,14 +158,16 @@ def create_trainer(model: nn.Module, criterion: Criterion, optim: Any,
     def _update(e: Engine, batch: Batch) -> Dict[str, Tensor]:
         iteration = e.state.iteration
         model.train()
-        if not iteration % update_freq:
-            optim.zero_grad()
-        batch = prepare_batch(batch, device)
+        batch = _prepare_batch(batch, device, non_blocking=True)
         out = model(*batch)
         losses = criterion(out, batch)
+
+        if not iteration % update_freq:
+            optim.zero_grad()
         losses['loss'].backward()
         if not (iteration + 1) % update_freq:
             optim.step()
+
         engine.state.lr = [p['lr'] for p in optim.param_groups]
         return gather_outs(model, batch, out, losses)
 
@@ -186,7 +182,7 @@ def create_evaluator(model: nn.Module, criterion: Criterion,
     def _eval(e: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.eval()
         with torch.no_grad():
-            batch = prepare_batch(batch, device)
+            batch = _prepare_batch(batch, device, non_blocking=True)
             outs = model(*batch)
             losses = criterion(outs, batch)
         return gather_outs(model, batch, outs, losses)
@@ -202,11 +198,13 @@ def add_metrics(engine: Engine, metrics: Metrics):
         metric.attach(engine, name)
 
 
-def prepare_batch(batch: Batch, device: torch.device) -> Batch:
+def _prepare_batch(batch: Batch, device: torch.device,
+                   non_blocking: bool) -> Batch:
     x, y = batch
-    x = x.to(device)
-    y = y.to(device)
-    return x, y
+    return (
+        convert_tensor(x, device=device, non_blocking=non_blocking),
+        convert_tensor(y, device=device, non_blocking=non_blocking),
+    )
 
 
 def gather_outs(model: nn.Module, batch: Batch, model_out: ModelOut,
@@ -217,7 +215,7 @@ def gather_outs(model: nn.Module, batch: Batch, model_out: ModelOut,
     return out
 
 
-def create_metrics(keys: List[str]) -> Metrics:
+def create_metrics(keys: List[str], device: Optional[torch.device] = None) -> Metrics:
     def _acc_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         return (out['y_pred'] >= 0.5).float(), out['y_true']
 
@@ -231,6 +229,9 @@ def create_metrics(keys: List[str]) -> Metrics:
                for key in keys}
     metrics['acc'] = Accuracy(output_transform=_acc_transform)
     metrics['nll'] = Loss(torch.nn.BCELoss(), output_transform=_nll_transform)
+    if device:
+        for m in metrics.values():
+            m.device = device
     return metrics
 
 
@@ -272,14 +273,14 @@ def run(conf: DictConfig):
 
     model = instantiate(conf.model).to(device)
     if distributed:
-        model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
+        model = DistributedDataParallel(model, device_ids=[local_rank, ], output_device=local_rank)
         model.to_y = model.module.to_y
     if rank == 0:
         print(model)
     loss = instantiate(conf.loss)
     optim = create_optimizer(conf.optimizer, model.parameters())
 
-    metrics = create_metrics(loss.keys(), device)
+    metrics = create_metrics(loss.keys(), device if distributed else None)
     trainer = create_trainer(model, loss, optim, device, conf, metrics)
     evaluator = create_evaluator(model, loss, device, metrics)
 
@@ -354,7 +355,8 @@ def run(conf: DictConfig):
     except Exception as e:
         import traceback
         print(traceback.format_exc())
-    pbar.close()
+    if rank == 0:
+        pbar.close()
 
 
 @hydra.main(config_path="../config/core.yaml")

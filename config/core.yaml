@@ -1,6 +1,10 @@
 hydra:
   run:
-    dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${distributed.local_rank}
+    dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job_logging:
+    handlers:
+      file:
+        filename: ${hydra.job.name}_${distributed.local_rank}.log
 
 defaults:
   - model: samwise
@@ -47,10 +51,11 @@ optimizer:
   lr: 0.001
   betas: [0.9, 0.999]
   weight_decay: 0
+  step_interval: 2
 
 train:
   epochs: 100
-  epoch_length: 5000
+  epoch_length: 2000
   checkpoints:
     load: null
     base_dir: null
