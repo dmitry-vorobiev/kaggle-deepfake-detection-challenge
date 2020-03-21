@@ -3,9 +3,6 @@ from functools import partial
 from torch.utils.data import Sampler, Dataset
 from typing import Callable, Union
 
-# from .images import ImagesDataset
-# from .hdf5 import HDF5Dataset
-
 
 def sparse_frames(n: int, total: int) -> np.ndarray:
     indices = np.linspace(0, total, min(n, total), dtype=int, endpoint=False)
@@ -50,46 +47,39 @@ class BalancedSampler(Sampler):
             raise ValueError("DataSource.df must have a 'label' column")
 
         self.df = data_source.df
-        self._num_samples = num_samples
-
-        if num_replicas > 1:
-            labels = self.df['label'].values
-            indices = []
-            for label in np.unique(labels):
-                label_indices = (labels == label).nonzero()[0]
-                chunk_size = len(label_indices) // num_replicas
-                start = chunk_size * replica_id
-                end = chunk_size * (replica_id + 1)
-                indices.append(label_indices[start:end])
-            indices = np.concatenate(indices)
-            self.df = self.df.iloc[indices]
-
-    @property
-    def num_samples(self):
-        if self._num_samples is None:
-            return len(self.df)
-        return self._num_samples
+        self.num_samples = num_samples
+        self.replica_id = replica_id
+        self.num_replicas = num_replicas
 
     def __len__(self):
-        return self.num_samples
+        return self.num_samples or len(self.df)
 
     def __iter__(self):
-        all_labels = self.df['label'].values
-        unique_labels, label_freq = np.unique(all_labels, return_counts=True)
-        rev_freq = (len(all_labels) / label_freq)
+        labels = self.df['label'].values
+
+        unique_labels, label_freq = np.unique(labels, return_counts=True)
+        rev_freq = (len(labels) / label_freq)
         shuffle = np.random.permutation
         
-        indices = []
+        sampled = []
         for freq, label in zip(rev_freq, unique_labels):
             fraction, times = np.modf(freq)
-            label_indices = (all_labels == label).nonzero()[0]
+            idxs = (labels == label).nonzero()[0]
+
+            if self.num_replicas > 1:
+                offset = self.replica_id
+                chunk_size = len(idxs) // self.num_replicas
+                start = chunk_size * offset
+                end = chunk_size * (offset + 1)
+                idxs = idxs[start:end]
+
             for _ in range(int(times)):
-                label_indices = shuffle(label_indices)
-                indices.append(label_indices)
+                idxs = shuffle(idxs)
+                sampled.append(idxs)
             if fraction > 0.05:
-                label_indices = shuffle(label_indices)
-                chunk = int(len(label_indices) * fraction)
-                indices.append(label_indices[:chunk])
-        indices = np.concatenate(indices)
-        indices = shuffle(indices)[:self.num_samples]
+                idxs = shuffle(idxs)
+                chunk = int(len(idxs) * fraction)
+                sampled.append(idxs[:chunk])
+        indices = np.concatenate(sampled)
+        indices = shuffle(indices)[:len(self)]
         return iter(indices.tolist())

@@ -157,15 +157,21 @@ def log_epoch(engine: Engine, trainer: Engine, title: str) -> None:
 
 
 def create_trainer(model: nn.Module, criterion: Criterion, optim: Any,
-                   device: torch.device, metrics: Optional[Metrics] = None):
+                   device: torch.device, conf,
+                   metrics: Optional[Metrics] = None):
+    update_freq = conf.optimizer.step_interval
+
     def _update(e: Engine, batch: Batch) -> Dict[str, Tensor]:
+        iteration = e.state.iteration
         model.train()
-        optim.zero_grad()
+        if not iteration % update_freq:
+            optim.zero_grad()
         batch = prepare_batch(batch, device)
         out = model(*batch)
         losses = criterion(out, batch)
         losses['loss'].backward()
-        optim.step()
+        if not (iteration + 1) % update_freq:
+            optim.step()
         engine.state.lr = [p['lr'] for p in optim.param_groups]
         return gather_outs(model, batch, out, losses)
 
@@ -211,7 +217,7 @@ def gather_outs(model: nn.Module, batch: Batch, model_out: ModelOut,
     return out
 
 
-def create_metrics(keys: List[str], device: torch.device) -> Metrics:
+def create_metrics(keys: List[str]) -> Metrics:
     def _acc_transform(out: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
         return (out['y_pred'] >= 0.5).float(), out['y_true']
 
@@ -221,13 +227,10 @@ def create_metrics(keys: List[str], device: torch.device) -> Metrics:
     def _out_transform(key: str):
         return lambda out: out[key]
 
-    metrics = {key: RunningAverage(output_transform=_out_transform(key),
-                                   device=device)
+    metrics = {key: RunningAverage(output_transform=_out_transform(key))
                for key in keys}
-    metrics['acc'] = Accuracy(output_transform=_acc_transform, device=device)
-    metrics['nll'] = Loss(torch.nn.BCELoss(),
-                          output_transform=_nll_transform,
-                          device=device)
+    metrics['acc'] = Accuracy(output_transform=_acc_transform)
+    metrics['nll'] = Loss(torch.nn.BCELoss(), output_transform=_nll_transform)
     return metrics
 
 
@@ -249,14 +252,15 @@ def run(conf: DictConfig):
     if distributed:
         rank = dist.get_rank()
         torch.cuda.set_device(local_rank)
-        device = 'cuda'
         num_replicas = dist.get_world_size()
         epoch_length = epoch_length // num_replicas
         loader_args = dict(replica_id=local_rank, num_replicas=num_replicas)
     else:
         rank = 0
-        device = create_device(conf)
+        torch.cuda.set_device(conf.general.gpu)
         loader_args = dict()
+
+    device = torch.device('cuda')
     torch.manual_seed(conf.general.seed)
 
     train_dl = create_loader(conf.data.train, 'train', epoch_length=epoch_length,
@@ -276,7 +280,7 @@ def run(conf: DictConfig):
     optim = create_optimizer(conf.optimizer, model.parameters())
 
     metrics = create_metrics(loss.keys(), device)
-    trainer = create_trainer(model, loss, optim, device, metrics)
+    trainer = create_trainer(model, loss, optim, device, conf, metrics)
     evaluator = create_evaluator(model, loss, device, metrics)
 
     every_iteration = Events.ITERATION_COMPLETED
@@ -294,19 +298,6 @@ def run(conf: DictConfig):
     else:
         lr_scheduler = None
 
-    if rank == 0:
-        log_freq = conf.logging.iter_freq
-        log_event = Events.ITERATION_COMPLETED(every=log_freq)
-        pbar = ProgressBar(persist=False)
-
-        for engine, name in zip([trainer, evaluator], ['train', 'val']):
-            engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
-            engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
-            engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
-            pbar.attach(engine, metric_names=loss.keys())
-    else:
-        pbar = None
-
     trainer.add_event_handler(every_iteration, TerminateOnNan())
 
     cp = conf.train.checkpoints
@@ -317,13 +308,21 @@ def run(conf: DictConfig):
         'lr_scheduler': lr_scheduler
     }
 
-    if 'load' in cp.keys() and cp.load:
-        logging.info("Resume from a checkpoint: {}".format(cp.load))
-        Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
-        if pbar:
+    if rank == 0:
+        log_freq = conf.logging.iter_freq
+        log_event = Events.ITERATION_COMPLETED(every=log_freq)
+        pbar = ProgressBar(persist=False)
+
+        for engine, name in zip([trainer, evaluator], ['train', 'val']):
+            engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
+            engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
+            engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
+            pbar.attach(engine, metric_names=loss.keys())
+
+        if 'load' in cp.keys() and cp.load:
+            logging.info("Resume from a checkpoint: {}".format(cp.load))
             trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
 
-    if rank == 0:
         save_path = cp.get('base_dir', os.getcwd())
         logging.info("Saving checkpoints to {}".format(save_path))
         max_cp = max(int(cp.get('max_checkpoints', 1)), 1)
@@ -339,6 +338,9 @@ def run(conf: DictConfig):
             if cp_iter < 1 or epoch_length % cp_iter:
                 save_event = Events.EPOCH_COMPLETED(every=cp_epoch)
                 trainer.add_event_handler(save_event, make_checkpoint)
+
+    if 'load' in cp.keys() and cp.load:
+        Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
 
     def run_validation(e: Engine):
         torch.cuda.synchronize(device)
