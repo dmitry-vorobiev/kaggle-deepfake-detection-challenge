@@ -1,15 +1,21 @@
 hydra:
   run:
-    dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}_${distributed.local_rank}
 
 defaults:
-  - model: frodo_v2
+  - model: samwise
   - loss: tripple
   - lr_scheduler: one-cycle
   - common_transforms
 
 general:
   gpu: 1
+  seed: 333
+
+distributed:
+  backend: null
+  local_rank: 0
+  url: env://
 
 data:
   train:

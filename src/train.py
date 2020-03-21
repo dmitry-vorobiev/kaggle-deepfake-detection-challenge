@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import torch
+import torch.distributed as dist
 
 from functools import partial
 from hydra.utils import instantiate
@@ -13,6 +14,7 @@ from ignite.handlers import Checkpoint, DiskSaver, TerminateOnNan
 from ignite.metrics import Accuracy, Loss, Metric, RunningAverage
 from omegaconf import DictConfig, ListConfig
 from torch import nn, FloatTensor, Tensor
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import BatchSampler, DataLoader, Dataset
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -230,9 +232,22 @@ def _upd_pbar_iter_from_cp(engine: Engine, pbar: ProgressBar) -> None:
     pbar.n = engine.state.iteration
 
 
-@hydra.main(config_path="../config/core.yaml")
-def main(conf: DictConfig):
-    print(conf.pretty())
+def run(conf: DictConfig):
+    dist_conf = conf.distributed
+    local_rank = dist_conf.local_rank
+    backend = dist_conf.backend
+    distributed = backend is not None
+    if local_rank == 0:
+        print(conf.pretty())
+    if distributed:
+        torch.cuda.set_device(local_rank)
+        device = 'cuda'
+    else:
+        device = create_device(conf)
+    rank = dist.get_rank() if distributed else 0
+    # TODO: why add rank?
+    torch.manual_seed(conf.general.seed + rank)
+
     epochs = conf.train.epochs
     epoch_length = conf.train.epoch_length
 
@@ -242,9 +257,12 @@ def main(conf: DictConfig):
     if epoch_length < 1:
         epoch_length = len(train_dl)
 
-    device = create_device(conf)
     model = instantiate(conf.model).to(device)
-    print(model)
+    if distributed:
+        model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
+        model.to_y = model.module.to_y
+    # if local_rank == 0:
+    #     print(model)
     loss = instantiate(conf.loss)
     optim = create_optimizer(conf.optimizer, model.parameters())
 
@@ -267,15 +285,18 @@ def main(conf: DictConfig):
     else:
         lr_scheduler = None
 
-    log_freq = conf.logging.iter_freq
-    log_event = Events.ITERATION_COMPLETED(every=log_freq)
-    pbar = ProgressBar(persist=False)
+    if rank == 0:
+        log_freq = conf.logging.iter_freq
+        log_event = Events.ITERATION_COMPLETED(every=log_freq)
+        pbar = ProgressBar(persist=False)
 
-    for engine, name in zip([trainer, evaluator], ['train', 'val']):
-        engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
-        engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
-        engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
-        pbar.attach(engine, metric_names=loss.keys())
+        for engine, name in zip([trainer, evaluator], ['train', 'val']):
+            engine.add_event_handler(Events.EPOCH_STARTED, on_epoch_start)
+            engine.add_event_handler(log_event, log_iter, trainer, pbar, name, log_freq)
+            engine.add_event_handler(Events.EPOCH_COMPLETED, log_epoch, trainer, name)
+            pbar.attach(engine, metric_names=loss.keys())
+    else:
+        pbar = None
 
     trainer.add_event_handler(every_iteration, TerminateOnNan())
 
@@ -288,28 +309,34 @@ def main(conf: DictConfig):
     }
 
     if 'load' in cp.keys() and cp.load:
-        trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
         logging.info("Resume from a checkpoint: {}".format(cp.load))
         Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
+        if pbar:
+            trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
 
-    save_path = cp.get('base_dir', os.getcwd())
-    logging.info("Saving checkpoints to {}".format(save_path))
-    max_cp = max(int(cp.get('max_checkpoints', 1)), 1)
-    save = DiskSaver(save_path, create_dir=True, require_empty=True)
+    if rank == 0:
+        save_path = cp.get('base_dir', os.getcwd())
+        logging.info("Saving checkpoints to {}".format(save_path))
+        max_cp = max(int(cp.get('max_checkpoints', 1)), 1)
+        save = DiskSaver(save_path, create_dir=True, require_empty=True)
 
-    make_checkpoint = Checkpoint(to_save, save, n_saved=max_cp)
-    cp_iter = cp.interval_iteration
-    cp_epoch = cp.interval_epoch
-    if cp_iter > 0:
-        save_event = Events.ITERATION_COMPLETED(every=cp_iter)
-        trainer.add_event_handler(save_event, make_checkpoint)
-    if cp_epoch > 0:
-        if cp_iter < 1 or epoch_length % cp_iter:
-            save_event = Events.EPOCH_COMPLETED(every=cp_epoch)
+        make_checkpoint = Checkpoint(to_save, save, n_saved=max_cp)
+        cp_iter = cp.interval_iteration
+        cp_epoch = cp.interval_epoch
+        if cp_iter > 0:
+            save_event = Events.ITERATION_COMPLETED(every=cp_iter)
             trainer.add_event_handler(save_event, make_checkpoint)
+        if cp_epoch > 0:
+            if cp_iter < 1 or epoch_length % cp_iter:
+                save_event = Events.EPOCH_COMPLETED(every=cp_epoch)
+                trainer.add_event_handler(save_event, make_checkpoint)
+
+    def run_validation(e: Engine):
+        torch.cuda.synchronize(device)
+        evaluator.run(valid_dl)
 
     eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
-    trainer.add_event_handler(eval_event, lambda _: evaluator.run(valid_dl))
+    trainer.add_event_handler(eval_event, run_validation)
 
     try:
         trainer.run(train_dl, max_epochs=epochs)
@@ -319,6 +346,36 @@ def main(conf: DictConfig):
     pbar.close()
 
 
+@hydra.main(config_path="../config/core.yaml")
+def main(conf: DictConfig):
+    dist_conf = conf.distributed
+    local_rank = dist_conf.local_rank
+    backend = dist_conf.backend
+    distributed = backend is not None
+
+    if distributed:
+        dist.init_process_group(backend, init_method=dist_conf.url)
+        if local_rank > -1:
+            print("\nDistributed setting:")
+            print("\tbackend: {}".format(dist.get_backend()))
+            print("\tworld size: {}".format(dist.get_world_size()))
+            print("\trank: {}".format(dist.get_rank()))
+            print("\n")
+
+    try:
+        run(conf)
+    except KeyboardInterrupt:
+        print("Shutting down...")
+    except Exception as e:
+        if distributed:
+            dist.destroy_process_group()
+        raise e
+
+    if distributed:
+        dist.destroy_process_group()
+
+
 if __name__ == '__main__':
+    assert torch.cuda.is_available()
     torch.backends.cudnn.benchmark = True
     main()
