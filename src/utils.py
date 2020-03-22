@@ -1,5 +1,7 @@
 import os
+import torchvision.transforms as T
 
+from hydra.utils import instantiate
 from omegaconf import DictConfig
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
@@ -35,13 +37,8 @@ def read_file_list(conf: DictConfig, title: str) -> List[str]:
 
 
 def create_transforms(conf: DictConfig) -> Callable[[Any], Tensor]:
-    transforms = simple_transforms(
-        conf.resize_to,
-        mean=conf.mean,
-        std=conf.std,
-        hpf_n=conf.hpf_order,
-    )
-    return transforms
+    transforms = [instantiate(val['transform']) for val in conf]
+    return T.Compose(transforms)
 
 
 def create_dataset(conf: DictConfig, title: str) -> Dataset:

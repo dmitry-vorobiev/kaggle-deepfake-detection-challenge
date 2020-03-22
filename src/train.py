@@ -194,7 +194,7 @@ def run(conf: DictConfig):
     if distributed:
         model = DistributedDataParallel(model, device_ids=[local_rank, ], output_device=local_rank)
         model.to_y = model.module.to_y
-    if rank == 0:
+    if rank == 0 and conf.logging.model:
         print(model)
     loss = instantiate(conf.loss)
     optim = create_optimizer(conf.optimizer, model.parameters())
@@ -262,11 +262,10 @@ def run(conf: DictConfig):
     if 'load' in cp.keys() and cp.load:
         Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
 
-    if distributed:
-        sampler = train_dl.sampler
-        assert sampler is not None
-        trainer.add_event_handler(
-            Events.EPOCH_STARTED, lambda e: sampler.set_epoch(e.state.epoch - 1))
+    sampler = train_dl.sampler
+    assert sampler is not None
+    trainer.add_event_handler(
+        Events.EPOCH_STARTED, lambda e: sampler.set_epoch(e.state.epoch - 1))
 
     def run_validation(e: Engine):
         torch.cuda.synchronize(device)

@@ -7,10 +7,10 @@ hydra:
         filename: ${hydra.job.name}_${distributed.local_rank}.log
 
 defaults:
+  - data: default
   - model: samwise
   - loss: tripple
   - lr_scheduler: one-cycle
-  - common_transforms
 
 general:
   gpu: 1
@@ -67,4 +67,5 @@ validate:
   interval: 1
 
 logging:
+  model: false
   iter_freq: 100
