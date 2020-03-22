@@ -47,19 +47,16 @@ class BalancedSampler(Sampler):
             raise ValueError("DataSource must have a 'df' property")
         if 'label' not in data_source.df:
             raise ValueError("DataSource.df must have a 'label' column")
-        if num_replicas is None:
+        if num_replicas is not None:
             if not dist.is_available():
                 raise RuntimeError("Requires distributed package to be available")
-            num_replicas = dist.get_world_size()
-        if rank is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            rank = dist.get_rank()
+            if rank is None:
+                rank = dist.get_rank()
 
         self.df = data_source.df
         self.num_samples = num_samples
         self.rank = rank
-        self.num_replicas = num_replicas
+        self.num_replicas = num_replicas or 1
         self.epoch = 0
 
     def __len__(self):
