@@ -97,13 +97,15 @@ def stack_dec_blocks(width: int, start: int, end: int, wide=False):
 
 class Samwise(nn.Module):
     def __init__(self, image_shape: Tuple[int, int, int], width: int,
-                 enc_depth: int, aux_depth: int, p_drop=0.0, wide=False):
+                 enc_depth: int, aux_depth: int, wide=False,
+                 reduce: str = 'mean', gru_dim: Optional[int] = None,
+                 p_emb_drop=0.1, p_out_drop=0.1):
         super(Samwise, self).__init__()
         C, H, W = image_shape
         if H != W:
             raise AttributeError("Only square images are supported!")
 
-        max_depth = math.log2(H) + 1
+        max_depth = math.log2(H)
         if enc_depth + aux_depth > max_depth:
             raise AttributeError(
                 f"enc_depth + aux_depth should be <= {int(max_depth)} given the "
@@ -123,12 +125,29 @@ class Samwise(nn.Module):
         for i in range(2):
             aux_branch = stack_enc_blocks(
                 width // 2, enc_depth - 1, enc_depth - 1 + aux_depth, wide=wide)
-            setattr(self, 'aux_{}'.format(i), nn.Sequential(*aux_branch))
+            if p_emb_drop > 0:
+                aux_branch = [nn.Dropout2d(p=p_emb_drop)] + aux_branch
+            setattr(self, f'aux_{i}', nn.Sequential(*aux_branch))
 
-        out_dim = width * 2 ** (enc_depth + aux_depth - 1)
-        self.aux_out = nn.Sequential(
-            nn.Dropout(p=p_drop),
-            nn.Linear(out_dim, 1, bias=False))
+        if reduce == 'gru':
+            if not gru_dim:
+                raise AttributeError("GRU dim is missing")
+            aux_dim = width * 2 ** (enc_depth + aux_depth)
+            for i in range(2):
+                gru = nn.GRU(aux_dim, gru_dim, bidirectional=True)
+                setattr(self, f'gru_{i}', gru)
+            out_dim = gru_dim * 4
+        elif reduce == 'mean':
+            out_dim = width * 2 ** (enc_depth + aux_depth - 1)
+        else:
+            raise AttributeError(
+                f"reduce={reduce} - invalid value, available options: [gru, mean]")
+        self.reduce = reduce
+
+        aux_out = [nn.Linear(out_dim, 1, bias=False)]
+        if p_out_drop > 0:
+            aux_out = [nn.Dropout(p=p_out_drop)] + aux_out
+        self.aux_out = nn.Sequential(*aux_out)
 
     def forward(self, x: FloatTensor, y: LongTensor):
         N, C, D, H, W = x.shape
@@ -150,10 +169,22 @@ class Samwise(nn.Module):
 
         hidden = torch.cat(hidden, dim=2)
         x_rec = torch.cat(x_rec, dim=2)
-        aux_0 = reduce_frames(aux_0)
-        aux_1 = reduce_frames(aux_1)
-        aux = torch.cat([aux_0, aux_1], dim=1)
-        y_hat = self.aux_out(aux)
+
+        aux_out = []
+        for i, aux_i in enumerate([aux_0, aux_1]):
+            if self.reduce == 'gru':
+                gru = getattr(self, f'gru_{i}')
+                aux_i = torch.cat(aux_i, dim=2).reshape(N, D, -1)
+                # N, D, C -> D, N, C
+                aux_i = aux_i.transpose(0, 1)
+                aux_i, _ = gru(aux_i)
+                aux_i = aux_i.mean(0) + aux_i[-1]
+            else:
+                aux_i = reduce_frames(aux_i)
+            aux_out.append(aux_i)
+        aux_out = torch.cat(aux_out, dim=1)
+
+        y_hat = self.aux_out(aux_out)
         return hidden, x_rec, y_hat
 
     @staticmethod

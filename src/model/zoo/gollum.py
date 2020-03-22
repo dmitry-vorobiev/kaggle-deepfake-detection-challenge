@@ -105,14 +105,15 @@ class Gollum(nn.Module):
         hidden = torch.cat(hidden, dim=2)
         xs_hat = torch.cat(xs_hat, dim=2)
 
-        seq = self.middle(hidden).reshape(N, D, -1)
+        seq = self.middle(hidden).reshape(N, D, -1).transpose(0, 1)
         seq_out = self.rnn(seq)
         seq_out = pool_gru(seq_out)
         y_hat = self.out(seq_out)
 
         return hidden, xs_hat, y_hat
 
-    def to_y(self, h: Tensor, x_rec: Tensor, y_hat: Tensor):
+    @staticmethod
+    def to_y(h: Tensor, x_rec: Tensor, y_hat: Tensor):
         y_pred = y_hat.detach()
         y_pred = torch.sigmoid(y_pred).squeeze_(1)
         return y_pred

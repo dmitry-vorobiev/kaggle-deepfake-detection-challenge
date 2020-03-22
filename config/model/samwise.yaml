@@ -5,5 +5,8 @@ model:
     width: 8
     enc_depth: 5
     aux_depth: 3
-    p_drop: 0.15
-    wide: False
+    wide: false
+    reduce: gru
+    gru_dim: 64
+    p_emb_drop: 0.2
+    p_out_drop: 0.15

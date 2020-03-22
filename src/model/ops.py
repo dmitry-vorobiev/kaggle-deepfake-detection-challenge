@@ -18,17 +18,9 @@ def ones(n: int, device: torch.device) -> Tensor:
 
 def pool_gru(out_gru: Tuple[Tensor, Tensor]) -> Tensor:
     out, _ = out_gru
-    out_avg = torch.mean(out, dim=1)
-    out_max, _ = torch.max(out, dim=1)
+    out_avg = torch.mean(out, dim=0)
+    out_max, _ = torch.max(out, dim=0)
     return torch.cat([out_avg, out_max], dim=1)
-
-
-def pool_lstm(out_lstm: Tuple[Tensor, Tuple[Tensor, Tensor]]) -> Tensor:
-    out, (out_h, out_c) = out_lstm
-    out_avg = torch.mean(out, 1)
-    out_max, _ = torch.max(out, 1)
-    out_h = out_h.squeeze(0)
-    return torch.cat([out_avg, out_max, out_h], dim=1)
 
 
 def reshape_as(y: Tensor, h: Tensor) -> Tensor:

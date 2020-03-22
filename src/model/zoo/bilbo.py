@@ -73,13 +73,14 @@ class Bilbo(nn.Module):
         x_rec = torch.cat(x_rec, dim=2)
         features = torch.cat(features, dim=2)
 
-        gru_out = self.gru(features.reshape(N, D, -1))
+        gru_out = self.gru(features.reshape(N, D, -1).transpose(0, 1))
         gru_out = pool_gru(gru_out)
 
         y_hat = self.out(gru_out)
         return hidden, x_rec, y_hat
 
-    def to_y(self, h: Tensor, x_rec: Tensor, y_hat: Tensor):
+    @staticmethod
+    def to_y(h: Tensor, x_rec: Tensor, y_hat: Tensor):
         y_pred = y_hat.detach()
         y_pred = torch.sigmoid(y_pred).squeeze_(1)
         return y_pred
