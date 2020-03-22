@@ -1,12 +1,13 @@
 import argparse
 import concurrent.futures as fut
+import cv2
 import gc
 import os
 import sys
 import time
 from argparse import Namespace
 from functools import partial
-from typing import Dict, List, Callable, Optional
+from typing import Dict, List, Callable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -32,11 +33,32 @@ def get_file_list(df: pd.DataFrame, start: int, end: int,
     return df.iloc[start:end].apply(path_fn, axis=1).values.tolist()
 
 
-def write_file_list(files: List[str], path: str) -> None:    
+def write_file_list(files: List[str], path: str, mask: np.ndarray) -> None:
     with open(path, mode='w') as h:
         for i, f in enumerate(files):
-            if os.path.isfile(f):
+            if mask[i] and os.path.isfile(f):
                 h.write(f'{f} {i}\n')
+
+
+def parse_meta(files: List[str]) -> np.ndarray:
+    meta = np.zeros((len(files), 3))
+    for i, path in enumerate(files):
+        cap = cv2.VideoCapture(path)
+        meta[i, 0] = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        meta[i, 1] = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        meta[i, 2] = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        cap.release()
+    return meta
+
+
+def split_files_by_res(files_meta: np.ndarray, min_freq: int
+                       ) -> Tuple[List[np.ndarray], np.ndarray]:
+    px_count = files_meta[:, 1] * files_meta[:, 2]
+    clusters, freq = np.unique(px_count, return_counts=True)
+    split_masks = [(px_count == c) for i, c in enumerate(clusters)
+                   if freq[i] >= min_freq]
+    size_factor = clusters / (1920 * 1080)
+    return split_masks, size_factor
 
 
 def find_faces(frames: np.ndarray, detect_fn: Callable,
@@ -56,10 +78,10 @@ def find_faces(frames: np.ndarray, detect_fn: Callable,
     return faces
 
 
-def max_num_faces(face_counts: np.ndarray, uniq_frac_thresh: float) -> int:
-    uniq_vals, uniq_freq = np.unique(face_counts, return_counts=True)
-    mask = uniq_freq / len(face_counts) > uniq_frac_thresh
-    return uniq_vals[mask].max()
+def max_num_faces(face_counts: np.ndarray, unique_fraction_thresh: float) -> int:
+    unique_values, unique_freq = np.unique(face_counts, return_counts=True)
+    mask = unique_freq / len(face_counts) > unique_fraction_thresh
+    return unique_values[mask].max()
 
 
 def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
@@ -78,7 +100,6 @@ def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
 def prepare_data(start: int, end: int, chunk_dirs: List[str] = None, gpu='0',
                  args: Dict[str, any] = None) -> None:
     df = read_labels(args.data_dir, chunk_dirs=chunk_dirs, label=args.label)
-    seq_len = args.num_frames // args.num_pass
     device = torch.device('cuda:{}'.format(gpu))
     cfg = detector_cfg(args)
     detector = init_detector(cfg, args.det_weights, device).to(device)
@@ -118,46 +139,53 @@ def prepare_data(start: int, end: int, chunk_dirs: List[str] = None, gpu='0',
         for offset in range(start, end, args.max_open_files):
             last = min(offset + args.max_open_files, end)
             files = get_file_list(df, offset, last, args.data_dir)
+            print('{} | parsing meta for {} files'.format(device, len(files)))
+            files_meta = parse_meta(files)
+            min_unique_res_freq = int(len(files) * 0.02)
+            splits, size_factors = split_files_by_res(files_meta, min_unique_res_freq)
             if not len(files):
                 print('No files was read by {}'.format(device))
                 break
             handled_files = np.zeros(len(files), dtype=np.bool)
-            write_file_list(files, path=file_list_path)
-            pipe = VideoPipe(file_list_path, seq_len=seq_len,
-                             stride=args.stride, device_id=int(gpu))
-            pipe.build()
-            num_samples_read = pipe.epoch_size('reader')
 
-            if num_samples_read > 0:
-                data_iter = DALIGenericIterator(
-                    [pipe], ['frames', 'label'], num_samples_read, dynamic_shape=True)
-                if args.verbose: 
-                    t0 = time.time()
-                prev_idx = None
-                faces = []
+            for s, mask in enumerate(splits):
+                write_file_list(files, path=file_list_path, mask=mask)
+                seq_len = int(args.num_frames / args.num_pass / size_factors[s])
+                pipe = VideoPipe(file_list_path, seq_len=seq_len, stride=args.stride,
+                                 device_id=int(gpu))
+                pipe.build()
+                num_samples_read = pipe.epoch_size('reader')
 
-                for video_batch in data_iter:
-                    frames = video_batch[0]['frames'].squeeze(0)
-                    read_idx = video_batch[0]['label'].item()
-                    new_faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
-                    del video_batch, frames
+                if num_samples_read > 0:
+                    data_iter = DALIGenericIterator(
+                        [pipe], ['frames', 'label'], num_samples_read, dynamic_shape=True)
+                    if args.verbose:
+                        t0 = time.time()
+                    prev_idx = None
+                    faces = []
 
-                    if prev_idx is None or prev_idx == read_idx:
-                        faces += new_faces
-                    else:
-                        t0 = save(faces, offset + prev_idx, t0, 'dali')
-                        faces = new_faces
-                    prev_idx = read_idx
-                    handled_files[read_idx] = True
-                    tasks = maybe_wait(tasks)
-                # save last video
-                save(faces, offset + read_idx, t0, 'dali')
+                    for video_batch in data_iter:
+                        frames = video_batch[0]['frames'].squeeze(0)
+                        read_idx = video_batch[0]['label'].item()
+                        new_faces = find_faces(frames, detect_fn, args.max_face_num_thresh)
+                        del video_batch, frames
 
-            del pipe, data_iter
-            gc.collect()
+                        if prev_idx is None or prev_idx == read_idx:
+                            faces += new_faces
+                        else:
+                            t0 = save(faces, offset + prev_idx, t0, 'dali')
+                            faces = new_faces
+                        prev_idx = read_idx
+                        handled_files[read_idx] = True
+                        tasks = maybe_wait(tasks)
+                    # save last video
+                    save(faces, offset + read_idx, t0, 'dali')
+
+                del pipe, data_iter
+                gc.collect()
+
             unhandled_files = (~handled_files).nonzero()[0]
             num_bad_samples = len(unhandled_files)
-
             if num_bad_samples > 0:
                 print('Unable to parse %d videos with DALI\n'
                       'Running fallback decoding through OpenCV...' % num_bad_samples)
