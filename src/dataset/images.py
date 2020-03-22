@@ -8,7 +8,7 @@ from pathlib import Path
 from torch import Tensor
 from typing import Callable, List, Optional, Tuple
 
-from .hdf5 import Transforms
+from .hdf5 import Transforms2D, Transforms3D
 from .sample import FrameSampler
 from .transforms import no_transforms
 from .utils import pad_torch
@@ -18,12 +18,14 @@ log = logging.getLogger(__name__)
 
 class ImagesDataset(torch.utils.data.Dataset):
     def __init__(self, base_path: str, frames: int, sampler: FrameSampler,
-                 transforms: Optional[Transforms] = None,
+                 transforms: Optional[Transforms2D] = None,
+                 transforms_3d: Optional[Transforms3D] = None,
                  sub_dirs: Optional[List[str]] = None):
         self.base_path = base_path
         self.frames = frames
         self.sampler = sampler
         self.transforms = transforms
+        self.transforms_3d = transforms_3d
         self.df = ImagesDataset._read_annotations(base_path, sub_dirs)
         
     @staticmethod
@@ -80,6 +82,8 @@ class ImagesDataset(torch.utils.data.Dataset):
             if len(frames) > 0:
                 transform_x = self.transforms or no_transforms
                 frames = torch.stack(list(map(transform_x, frames)))
+                if self.transforms_3d:
+                    frames = self.transforms_3d(frames)
                 pad_amount = num_frames - frames.size(0)
                 if pad_amount > 0:
                     frames = pad_torch(frames, pad_amount, 'start')

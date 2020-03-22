@@ -5,9 +5,10 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
+from dataset.hdf5 import Transforms2D, Transforms3D
 
 
 def read_file_list(conf: DictConfig, title: str) -> List[str]:
@@ -36,9 +37,13 @@ def read_file_list(conf: DictConfig, title: str) -> List[str]:
     return dirs
 
 
-def create_transforms(conf: DictConfig) -> Callable[[Any], Tensor]:
-    transforms = [instantiate(val['transform']) for val in conf]
-    return T.Compose(transforms)
+def create_transforms(conf: DictConfig) -> Tuple[Transforms2D, Optional[Transforms3D]]:
+    transforms = T.Compose([instantiate(val['transform']) for val in conf.transforms])
+    transforms_3d = None
+    if 'transforms_3d' in conf:
+        transforms_3d = T.Compose([instantiate(val['transform'])
+                                   for val in conf.transforms_3d])
+    return transforms, transforms_3d
 
 
 def create_dataset(conf: DictConfig, title: str) -> Dataset:
@@ -55,10 +60,12 @@ def create_dataset(conf: DictConfig, title: str) -> Dataset:
             "Unknown dataset type: {} in data.{}.type. "
             "Known types are: {}.".format(conf.type, title, known_types))
     DatasetImpl = datasets[conf.type]
+    transforms, transforms_3d = create_transforms(conf)
     data = DatasetImpl(conf.dir,
                        frames=conf.sample.frames,
                        sampler=frame_sampler,
-                       transforms=create_transforms(conf.transforms),
+                       transforms=transforms,
+                       transforms_3d=transforms_3d,
                        sub_dirs=read_file_list(conf, title))
     print("Num {} samples: {}".format(title, len(data)))
     return data

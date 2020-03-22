@@ -16,6 +16,7 @@ data:
           params:
             mean: [4.09008235e-10, 3.37999846e-10, 4.81442422e-10]
             std: [0.03264627, 0.03247622, 0.03276182]
+    transforms_3d:
       - transform:
           class: kornia.augmentation.RandomHorizontalFlip
           params:

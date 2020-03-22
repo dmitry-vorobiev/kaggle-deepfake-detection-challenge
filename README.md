@@ -21,5 +21,5 @@ sys.path.insert(0, '/home/dmitry/projects/dfdc/vendors/Pytorch_Retinaface')
 
 5. Install other non-standart pip packages:
 ```
-pip install h5py numba pytorch-ignite hydra-core
+pip install h5py numba pytorch-ignite hydra-core kornia
 ```
