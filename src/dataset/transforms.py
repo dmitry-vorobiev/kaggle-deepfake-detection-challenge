@@ -4,7 +4,6 @@ import random
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
-from functools import partial
 from torchvision.transforms.functional import to_tensor
 from torch import Tensor
 from typing import Any, Callable, List, Optional, Tuple
@@ -49,7 +48,30 @@ class Resize(object):
         return "{}(size={})".format(Resize.__name__, self.size)
 
 
-class ImageGrad(object):
+class PadIfNeeded(object):
+    def __init__(self, size: int, mode='constant', value=0):
+        if not size:
+            raise AttributeError("Size should be positive number")
+        self.size = size
+        self.mode = mode
+        self.value = value
+
+    def __call__(self, t: Tensor):
+        S = self.size
+        H, W = t.size(-2), t.size(-1)
+        if H >= S and W >= S:
+            return t
+        pad_H = (S - H) // 2
+        pad_W = (S - W) // 2
+        pad = [pad_W, S - (W + pad_W),
+               pad_H, S - (H + pad_H)]
+        return F.pad(t, pad)
+
+    def __repr__(self):
+        return "{}(size={})".format(PadIfNeeded.__name__, self.size)
+
+
+class SpatialGradFilter(object):
     def __init__(self, order: int):
         if not order:
             raise AttributeError("Order should be positive number")
@@ -59,10 +81,10 @@ class ImageGrad(object):
         return image_grad(t, n=self.order, keep_size=True)
 
     def __repr__(self):
-        return "{}(order={})".format(ImageGrad.__name__, self.order)
+        return "{}(order={})".format(SpatialGradFilter.__name__, self.order)
 
 
-class RandomHorizontalFlipTensor(object):
+class RandomHorizontalFlipSequence(object):
     def __init__(self, p=0.5):
         if p < 0 or p > 1:
             raise ValueError("range of random erasing probability should be between 0 and 1")
@@ -74,14 +96,14 @@ class RandomHorizontalFlipTensor(object):
         return t
 
     def __repr__(self):
-        return "{}(p={})".format(RandomHorizontalFlipTensor.__name__, self.p)
+        return "{}(p={})".format(RandomHorizontalFlipSequence.__name__, self.p)
 
 
 def simple_transforms(img_size: int, mean: Mean = None,
                       std: Std = None, hpf_n=-1) -> Callable[[Any], Tensor]:
     ops = [Resize(img_size), T.ToTensor()]
     if hpf_n > 0:
-        ops.append(ImageGrad(order=hpf_n))
+        ops.append(SpatialGradFilter(order=hpf_n))
     if mean and std:
         if mean is None or std is None:
             raise AttributeError('Please specify both mean and std')

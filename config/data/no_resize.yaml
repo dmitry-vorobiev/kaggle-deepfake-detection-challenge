@@ -2,7 +2,9 @@ data:
   train:
     transforms:
       - transform:
-          class: dataset.transforms.Resize
+          class: torchvision.transforms.ToPILImage
+      - transform:
+          class: torchvision.transforms.CenterCrop
           params:
             size: 256
       - transform:
@@ -12,10 +14,14 @@ data:
           params:
             order: 3
       - transform:
+          class: dataset.transforms.PadIfNeeded
+          params:
+            size: 256
+      - transform:
           class: torchvision.transforms.Normalize
           params:
-            mean: [4.09008235e-10, 3.37999846e-10, 4.81442422e-10]
-            std: [0.03264627, 0.03247622, 0.03276182]
+            mean: [1.86951418e-07, 1.75129537e-07, 1.65279768e-07]
+            std: [0.05009644, 0.04926367, 0.0494046]
     transforms_3d:
       - transform:
           class: dataset.transforms.RandomHorizontalFlipSequence
@@ -24,7 +30,9 @@ data:
   val:
     transforms:
       - transform:
-          class: dataset.transforms.Resize
+          class: torchvision.transforms.ToPILImage
+      - transform:
+          class: torchvision.transforms.CenterCrop
           params:
             size: 256
       - transform:
@@ -34,7 +42,11 @@ data:
           params:
             order: 3
       - transform:
+          class: dataset.transforms.PadIfNeeded
+          params:
+            size: 256
+      - transform:
           class: torchvision.transforms.Normalize
           params:
-            mean: [4.09008235e-10, 3.37999846e-10, 4.81442422e-10]
-            std: [0.03264627, 0.03247622, 0.03276182]
+            mean: [1.86951418e-07, 1.75129537e-07, 1.65279768e-07]
+            std: [0.05009644, 0.04926367, 0.0494046]
