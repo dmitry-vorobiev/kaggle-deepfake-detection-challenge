@@ -6,7 +6,6 @@ from functools import partial
 from torch import nn, FloatTensor, LongTensor, Tensor
 from typing import Callable, Optional, Tuple, Union
 
-from .frodo import reduce_frames
 from ..layers import conv2D, Lambda
 from ..ops import select
 
@@ -73,6 +72,37 @@ class DecoderBlock(nn.Module):
         return torch.relu_(x)
 
 
+class RNNBlock(nn.Module):
+    def __init__(self, in_ch: int, rnn_ch: int, bidirectional=False):
+        super().__init__()
+        self.gru = nn.GRU(in_ch, rnn_ch, bidirectional=bidirectional)
+        self.out_ch = rnn_ch * 3 * (2 if bidirectional else 1)
+
+    def forward(self, x):
+        N, C, D, H, W = x.shape
+        x = x.reshape(N, D, -1)
+        # N, D, C -> D, N, C
+        x = x.transpose(0, 1)
+        x, _ = self.gru(x)
+        x_mean = x.mean(0)
+        x_max, _ = x.max(0)
+        x_last = x[-1]
+        x = torch.cat([x_mean, x_max, x_last], dim=1)
+        return x
+
+
+class MaxMean3D(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        N, C, D, H, W = x.shape
+        x_mean = F.avg_pool3d(x, (D, H, W))
+        x_max = F.max_pool3d(x, (D, H, W))
+        x = torch.cat([x_mean, x_max], dim=1)
+        return x.reshape(N, -1)
+
+
 def stack_enc_blocks(width: int, start: int, end: int, wide=False):
     layers = []
     for i in range(start, end):
@@ -98,7 +128,7 @@ def stack_dec_blocks(width: int, start: int, end: int, wide=False):
 class Samwise(nn.Module):
     def __init__(self, image_shape: Tuple[int, int, int], width: int,
                  enc_depth: int, aux_depth: int, wide=False,
-                 reduce: str = 'mean', gru_dim: Optional[int] = None,
+                 reduce: str = 'mean', rnn_dim: Optional[int] = None,
                  p_emb_drop=0.1, p_out_drop=0.1):
         super(Samwise, self).__init__()
         C, H, W = image_shape
@@ -129,20 +159,30 @@ class Samwise(nn.Module):
                 aux_branch = [nn.Dropout2d(p=p_emb_drop)] + aux_branch
             setattr(self, f'aux_{i}', nn.Sequential(*aux_branch))
 
-        if reduce == 'gru':
-            if not gru_dim:
+        aux_dim = width * 2 ** (enc_depth + aux_depth)
+        out_dim = 0
+        if reduce == 'rnn':
+            if not rnn_dim:
                 raise AttributeError("GRU dim is missing")
-            aux_dim = width * 2 ** (enc_depth + aux_depth)
             for i in range(2):
-                gru = nn.GRU(aux_dim, gru_dim, bidirectional=True)
-                setattr(self, f'gru_{i}', gru)
-            out_dim = gru_dim * 4
+                reducer = RNNBlock(aux_dim, rnn_dim, bidirectional=True)
+                out_dim = reducer.out_ch * 2
+                setattr(self, f'reduce_{i}', reducer)
         elif reduce == 'mean':
-            out_dim = width * 2 ** (enc_depth + aux_depth - 1)
+            # maybe reduce all 3 last dims?
+            reducer = Lambda(lambda x: x.flatten(2).mean(dim=2))
+            out_dim = aux_dim // 2
+            for i in range(2):
+                setattr(self, f'reduce_{i}', reducer)
+        elif reduce == 'max-mean' or reduce == 'mean-max':
+            reducer = MaxMean3D()
+            out_dim = aux_dim
+            for i in range(2):
+                setattr(self, f'reduce_{i}', reducer)
         else:
             raise AttributeError(
-                f"reduce={reduce} - invalid value, available options: [gru, mean]")
-        self.reduce = reduce
+                f"reduce={reduce} - invalid value, available options: "
+                "[rnn, mean, max-mean, mean-max]")
 
         aux_out = [nn.Linear(out_dim, 1, bias=False)]
         if p_out_drop > 0:
@@ -172,15 +212,8 @@ class Samwise(nn.Module):
 
         aux_out = []
         for i, aux_i in enumerate([aux_0, aux_1]):
-            if self.reduce == 'gru':
-                gru = getattr(self, f'gru_{i}')
-                aux_i = torch.cat(aux_i, dim=2).reshape(N, D, -1)
-                # N, D, C -> D, N, C
-                aux_i = aux_i.transpose(0, 1)
-                aux_i, _ = gru(aux_i)
-                aux_i = aux_i.mean(0) + aux_i[-1]
-            else:
-                aux_i = reduce_frames(aux_i)
+            aux_i = torch.cat(aux_i, dim=2)
+            aux_i = getattr(self, f'reduce_{i}')(aux_i)
             aux_out.append(aux_i)
         aux_out = torch.cat(aux_out, dim=1)
 

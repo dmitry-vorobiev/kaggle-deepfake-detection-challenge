@@ -6,7 +6,7 @@ model:
     enc_depth: 5
     aux_depth: 3
     wide: false
-    reduce: gru
-    gru_dim: 64
+    reduce: max-mean
+    rnn_dim: 64
     p_emb_drop: 0.2
-    p_out_drop: 0.15
+    p_out_drop: 0.2

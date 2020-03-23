@@ -196,9 +196,9 @@ def run(conf: DictConfig):
         model.to_y = model.module.to_y
     if rank == 0 and conf.logging.model:
         print(model)
-    loss = instantiate(conf.loss)
-    optim = create_optimizer(conf.optimizer, model.parameters())
 
+    loss = instantiate(conf.loss)
+    optim = instantiate(conf.optimizer, model.parameters())
     metrics = create_metrics(loss.keys(), device if distributed else None)
     trainer = create_trainer(model, loss, optim, device, conf, metrics)
     evaluator = create_evaluator(model, loss, device, metrics)
