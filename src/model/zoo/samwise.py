@@ -169,8 +169,7 @@ class Samwise(nn.Module):
                 out_dim = reducer.out_ch * 2
                 setattr(self, f'reduce_{i}', reducer)
         elif reduce == 'mean':
-            # maybe reduce all 3 last dims?
-            reducer = Lambda(lambda x: x.flatten(2).mean(dim=2))
+            reducer = Lambda(lambda x: x.mean(dim=(2, 3, 4)))
             out_dim = aux_dim // 2
             for i in range(2):
                 setattr(self, f'reduce_{i}', reducer)

@@ -27,15 +27,6 @@ GatheredOuts = Dict[str, Union[float, Tensor]]
 Metrics = Dict[str, Metric]
 
 
-def create_optimizer(conf: DictConfig, params: Iterable[FloatTensor]) -> torch.optim.Adam:
-    optim = torch.optim.Adam(
-        params,
-        lr=conf.lr,
-        betas=conf.betas,
-        weight_decay=conf.weight_decay)
-    return optim
-
-
 def humanize_time(timestamp: float) -> str:
     return dt.datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
 
@@ -223,7 +214,7 @@ def run(conf: DictConfig):
     cp = conf.train.checkpoints
     to_save = {
         'trainer': trainer,
-        'model': model,
+        'model': model.module if distributed else model,
         'optimizer': optim,
         'lr_scheduler': lr_scheduler
     }
@@ -283,7 +274,7 @@ def run(conf: DictConfig):
         pbar.close()
 
 
-@hydra.main(config_path="../config/core.yaml")
+@hydra.main(config_path="../config/train.yaml")
 def main(conf: DictConfig):
     dist_conf = conf.distributed
     local_rank = dist_conf.local_rank

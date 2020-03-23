@@ -38,3 +38,20 @@ data:
           params:
             mean: [4.09008235e-10, 3.37999846e-10, 4.81442422e-10]
             std: [0.03264627, 0.03247622, 0.03276182]
+  test:
+    transforms:
+      - transform:
+          class: dataset.transforms.Resize
+          params:
+            size: 256
+      - transform:
+          class: torchvision.transforms.ToTensor
+      - transform:
+          class: dataset.transforms.SpatialGradFilter
+          params:
+            order: 3
+      - transform:
+          class: torchvision.transforms.Normalize
+          params:
+            mean: [4.09008235e-10, 3.37999846e-10, 4.81442422e-10]
+            std: [0.03264627, 0.03247622, 0.03276182]
