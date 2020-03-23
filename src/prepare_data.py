@@ -22,79 +22,22 @@ from data import cfg_mnet, cfg_re50
 
 from dataset.utils import read_labels
 from detectors.retinaface import detect, init_detector
-from file_utils import mkdirs, dump_to_disk
-from image import crop_square
-from video import VideoPipe, read_frames_cv2
-
-
-def get_file_list(df: pd.DataFrame, start: int, end: int, 
-                  base_dir: str) -> List[str]:
-    path_fn = lambda row: os.path.join(base_dir, row.dir, row.name)
-    return df.iloc[start:end].apply(path_fn, axis=1).values.tolist()
-
-
-def write_file_list(files: List[str], path: str, mask: np.ndarray) -> None:
-    with open(path, mode='w') as h:
-        for i, f in enumerate(files):
-            if mask[i] and os.path.isfile(f):
-                h.write(f'{f} {i}\n')
-
-
-def parse_meta(files: List[str]) -> np.ndarray:
-    meta = np.zeros((len(files), 3))
-    for i, path in enumerate(files):
-        cap = cv2.VideoCapture(path)
-        meta[i, 0] = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        meta[i, 1] = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        meta[i, 2] = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        cap.release()
-    return meta
-
-
-def split_files_by_res(files_meta: np.ndarray, min_freq: int
-                       ) -> Tuple[List[np.ndarray], np.ndarray]:
-    px_count = files_meta[:, 1] * files_meta[:, 2]
-    clusters, freq = np.unique(px_count, return_counts=True)
-    split_masks = [(px_count == c) for i, c in enumerate(clusters)
-                   if freq[i] >= min_freq]
-    size_factor = clusters / (1920 * 1080)
-    return split_masks, size_factor
-
-
-def find_faces(frames: np.ndarray, detect_fn: Callable,
-               max_face_num_thresh: float) -> List[np.ndarray]:
-    detections = detect_fn(frames)
-    if isinstance(frames, Tensor):
-        frames = frames.cpu().numpy()
-    num_faces = np.array(list(map(len, detections)), dtype=np.uint8)
-    max_faces = max_num_faces(num_faces, max_face_num_thresh)
-    faces = []
-    for f in range(len(frames)):
-        for det in detections[f][:max_faces]:
-            face = crop_square(frames[f], det[:4])
-            if face is not None:
-                faces.append(face)
-    del detections
-    return faces
-
-
-def max_num_faces(face_counts: np.ndarray, unique_fraction_thresh: float) -> int:
-    unique_values, unique_freq = np.unique(face_counts, return_counts=True)
-    mask = unique_freq / len(face_counts) > unique_fraction_thresh
-    return unique_values[mask].max()
+from detection_utils import find_faces
+from file_utils import mkdirs, dump_to_disk, get_file_list, write_file_list
+from video import VideoPipe, read_frames_cv2, parse_meta, split_files_by_res
 
 
 def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:
     cfg = cfg_mnet if args.det_encoder == 'mnet' else cfg_re50
     cfg = {
-        **cfg, 
+        **cfg,
         'batch_size': args.batch_size,
         'score_thresh': args.score_thresh,
         'nms_thresh': args.nms_thresh,
         'top_k': args.top_k,
         'keep_top_k': args.keep_top_k
     }
-    return cfg   
+    return cfg
 
 
 def prepare_data(start: int, end: int, chunk_dirs: List[str] = None, gpu='0',
@@ -210,50 +153,50 @@ def parse_args() -> Namespace:
     parser.add_argument('--start', type=int, default=0, help='start index')
     parser.add_argument('--end', type=int, default=None, help='end index')
     parser.add_argument('--chunks', type=str, default='')
-    parser.add_argument('--label', type=int, default=None, 
+    parser.add_argument('--label', type=int, default=None,
                         help='filter videos by label')
-    parser.add_argument('--max_open_files', type=int, default=300, 
+    parser.add_argument('--max_open_files', type=int, default=300,
                         help='maximum open files to open with DALI pipe')
-    parser.add_argument('--num_frames', type=int, default=30, 
+    parser.add_argument('--num_frames', type=int, default=30,
                         help='max number of frames to use per each video')
-    parser.add_argument('--stride', type=int, default=10, 
+    parser.add_argument('--stride', type=int, default=10,
                         help='interval between consecutive frames')
-    parser.add_argument('--num_pass', type=int, default=1, 
+    parser.add_argument('--num_pass', type=int, default=1,
                         help='split parsing of each video into multiple '
                              'passes to save GPU memory')
-    parser.add_argument('--batch_size', type=int, default=32, 
+    parser.add_argument('--batch_size', type=int, default=32,
                         help='batch size to use for detection')
-    parser.add_argument('--data_dir', type=str, default='', 
+    parser.add_argument('--data_dir', type=str, default='',
                         help='where unpacked videos are stored')
-    parser.add_argument('--save_dir', type=str, default='', 
+    parser.add_argument('--save_dir', type=str, default='',
                         help='where to save packed images')
-    parser.add_argument('--det_encoder', type=str, default='mnet', 
+    parser.add_argument('--det_encoder', type=str, default='mnet',
                         choices=['mnet', 'resnet50'])
-    parser.add_argument('--det_weights', type=str, default='', 
+    parser.add_argument('--det_weights', type=str, default='',
                         help='weights for Pytorch_Retinaface model')
     parser.add_argument('--silent', action='store_true')
     parser.add_argument('--gpus', type=str, default='0')
-    parser.add_argument('--num_workers', type=int, default=1, 
+    parser.add_argument('--num_workers', type=int, default=1,
                         help='num subproc per each GPU')
-    parser.add_argument('--task_queue_depth', type=int, default=20, 
+    parser.add_argument('--task_queue_depth', type=int, default=20,
                         help='limit the amount of unfinished tasks per each worker')
-    parser.add_argument('--score_thresh', type=float, default=0.75, 
+    parser.add_argument('--score_thresh', type=float, default=0.75,
                         help='filter out detector proposals by confidence threshold')
-    parser.add_argument('--nms_thresh', type=float, default=0.4, 
+    parser.add_argument('--nms_thresh', type=float, default=0.4,
                         help='filter out overlapping proposals by area of intersection')
-    parser.add_argument('--top_k', type=int, default=500, 
+    parser.add_argument('--top_k', type=int, default=500,
                         help='max number of initial proposal')
-    parser.add_argument('--keep_top_k', type=int, default=5, 
+    parser.add_argument('--keep_top_k', type=int, default=5,
                         help='hard limit number of predictions')
     parser.add_argument('--max_face_num_thresh', type=float, default=0.25,
                         help='cut detections based on the frequency encoding')
-    parser.add_argument('--img_format', type=str, default='png', 
+    parser.add_argument('--img_format', type=str, default='png',
                         choices=['png', 'webp', 'jpeg'])
-    parser.add_argument('--img_scale', type=float, default=1.0, 
+    parser.add_argument('--img_scale', type=float, default=1.0,
                         help='resize images before saving to disk')
-    parser.add_argument('--pack', action='store_true', 
+    parser.add_argument('--pack', action='store_true',
                         help='pack images into hdf5')
-    parser.add_argument('--lossy', action='store_true', 
+    parser.add_argument('--lossy', action='store_true',
                         help='use lossy compression')
 
     args = parser.parse_args()
@@ -303,7 +246,7 @@ def main():
             for i, gpu in enumerate(gpus):
                 job = ex.submit(proc_fn,
                                 start=(start + num_samples_per_gpu * i),
-                                end=(start + num_samples_per_gpu * (i+1)),
+                                end=(start + num_samples_per_gpu * (i + 1)),
                                 gpu=gpu)
                 jobs.append(job)
             fut.wait(jobs)

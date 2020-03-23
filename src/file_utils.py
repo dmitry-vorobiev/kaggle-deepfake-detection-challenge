@@ -4,6 +4,7 @@ from typing import List
 import cv2
 import h5py
 import numpy as np
+import pandas as pd
 
 LOSSLESS_OPTIONS = {
     'png': [cv2.IMWRITE_PNG_COMPRESSION, 5],
@@ -105,3 +106,16 @@ def create_mask(n: int, total: int) -> np.ndarray:
     idxs = calc_idxs(n, total)
     mask[idxs] = 1
     return mask
+
+
+def get_file_list(df: pd.DataFrame, start: int, end: int,
+                  base_dir: str) -> List[str]:
+    path_fn = lambda row: os.path.join(base_dir, row.dir, row.name)
+    return df.iloc[start:end].apply(path_fn, axis=1).values.tolist()
+
+
+def write_file_list(files: List[str], path: str, mask: np.ndarray) -> None:
+    with open(path, mode='w') as h:
+        for i, f in enumerate(files):
+            if mask[i] and os.path.isfile(f):
+                h.write(f'{f} {i}\n')

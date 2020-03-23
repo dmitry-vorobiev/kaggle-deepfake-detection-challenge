@@ -128,8 +128,7 @@ def postproc_frame(
     return dets
 
 
-def init_detector(cfg: Dict[str, any], weights: Dict[str, Tensor], 
-                  device: torch.device) -> torch.nn.Module:
+def init_detector(cfg: Dict[str, any], weights: str, device: torch.device) -> torch.nn.Module:
     cfg['pretrain'] = False
     net = RetinaFace(cfg=cfg, phase='test')
     net = load_model(net, weights, device)

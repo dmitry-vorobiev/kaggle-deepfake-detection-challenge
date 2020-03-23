@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 import nvidia.dali as dali
+from typing import List, Optional, Tuple
 
 
 class VideoPipe(dali.pipeline.Pipeline):
@@ -19,7 +20,7 @@ class VideoPipe(dali.pipeline.Pipeline):
         return output, labels
 
 
-def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None) -> np.ndarray:
+def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None) -> Optional[np.ndarray]:
     """Reads frames that are always evenly spaced throughout the video.
 
     Arguments:
@@ -50,8 +51,8 @@ def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None) -> np.ndarr
     return result
 
 
-def read_frames_at_indices(
-        path: str, capture: cv2.VideoCapture, frame_idxs: np.ndarray) -> np.ndarray:
+def read_frames_at_indices(path: str, capture: cv2.VideoCapture,
+                           frame_idxs: np.ndarray) -> Optional[np.ndarray]:
     try:
         frames = []
         next_idx = 0
@@ -77,3 +78,25 @@ def read_frames_at_indices(
         print('Unable to read %s' % path)
         print(e)
         return None
+
+
+def parse_meta(files: List[str]) -> np.ndarray:
+    meta = np.zeros((len(files), 3))
+    for i, path in enumerate(files):
+        cap = cv2.VideoCapture(path)
+        meta[i, 0] = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        meta[i, 1] = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        meta[i, 2] = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        cap.release()
+    return meta
+
+
+def split_files_by_res(files_meta: np.ndarray, min_freq: int
+                       ) -> Tuple[List[np.ndarray], np.ndarray]:
+    px_count = files_meta[:, 1] * files_meta[:, 2]
+    clusters, freq = np.unique(px_count, return_counts=True)
+    split_masks = [(px_count == c) for i, c in enumerate(clusters)
+                   if freq[i] >= min_freq]
+    size_factor = clusters / (1920 * 1080)
+    return split_masks, size_factor
+
