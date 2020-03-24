@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import torch
+import torchvision.transforms as T
 
 from functools import partial
 from hydra.utils import instantiate
@@ -22,6 +23,7 @@ from layers.functions.prior_box import PriorBox
 
 from file_utils import write_file_list
 from image import crop_square_torch
+from dataset.utils import pad_torch
 from detection_utils import max_num_faces
 from detectors.retinaface import init_detector, prepare_imgs, postproc_detections_gpu
 from video import VideoPipe, parse_meta, read_frames_cv2, split_files_by_res
@@ -36,7 +38,7 @@ def merge_detector_cfg(conf: DictConfig) -> Dict[str, any]:
     return cfg
 
 
-def find_faces(frames: Tensor, chunk_size: int, model: torch.nn.Module,
+def find_faces(frames: Tensor, model: torch.nn.Module,
                device: torch.device, conf: Dict[str, Any]) -> List[Tensor]:
     D, H, W, C = frames.shape
     frames_orig = frames.permute(0, 3, 1, 2)
@@ -45,17 +47,11 @@ def find_faces(frames: Tensor, chunk_size: int, model: torch.nn.Module,
     priors = prior_box.forward().to(device)
     scale = scale.to(device)
 
-    detections = []
-    for start in range(0, D, chunk_size):
-        end = start + chunk_size
-        with torch.no_grad():
-            locations, confidence, landmarks = model(frames[start:end])
-            del landmarks
-        det_chunk = postproc_detections_gpu(
+    with torch.no_grad():
+        locations, confidence, landmarks = model(frames)
+        detections = postproc_detections_gpu(
             locations, confidence, priors, scale, conf)
-        detections.extend(det_chunk)
-        del locations, confidence
-    del priors, prior_box, scale, frames
+    del locations, confidence, landmarks, priors, prior_box, scale, frames
 
     num_faces = np.array(list(map(len, detections)), dtype=np.uint8)
     max_faces = max_num_faces(num_faces, conf['max_face_num_thresh'])
@@ -105,6 +101,19 @@ def main(conf: DictConfig):
     logging.info(
         "Splitting files by resolution. Found {} clusters, "
         "size multipliers are: {}".format(len(size_factors), size_factors_str))
+    transforms = T.Compose([instantiate(val['transform']) for val in data_conf.transforms])
+    print("Using transforms: {}".format(transforms))
+
+    def predict(images: List[Tensor]) -> float:
+        x = torch.stack(list(map(transforms, images)))
+        pad_amount = reader_conf.frames - x.size(0)
+        if pad_amount > 0:
+            x = pad_torch(x, pad_amount, 'start')
+        # D, C, H, W -> C, D, H, W
+        x = x.transpose(0, 1).unsqueeze_(0)
+        out = model(x, None)
+        y_hat = model.to_y(*out).cpu().numpy()
+        return y_hat
 
     reader_conf = data_conf.sample
 
@@ -131,7 +140,7 @@ def main(conf: DictConfig):
                         video_batch = next(data_iter)
                         frames = video_batch[0]['frames'].squeeze(0)
                         read_idx = video_batch[0]['label'].item()
-                        new_faces = crop_faces(frames, seq_len)
+                        new_faces = crop_faces(frames)
                         del video_batch, frames
 
                         if prev_idx is None or prev_idx == read_idx:
@@ -139,8 +148,9 @@ def main(conf: DictConfig):
                         else:
                             split_idx = offset + read_idx
                             abs_idx = split_idxs[split_idx]
-                            logging.info("{} | faces: {} | {}".format(
-                                abs_idx, len(faces), files[abs_idx]))
+                            y_pred = predict(faces)
+                            logging.info("dali | {} | faces: {} | y: {} | {}".format(
+                                abs_idx, len(faces), y_pred, files[abs_idx]))
                             # run prediction
                             handled_split_files[split_idx] = True
                             faces = new_faces
@@ -164,10 +174,11 @@ def main(conf: DictConfig):
                 abs_idx = split_idxs[idx]
                 frames = read_frames_cv2(files[abs_idx], reader_conf.frames)
                 if frames is not None:
-                    faces = find_faces(frames, detect_fn, face_det_conf)
-                    logging.info("{} | faces: {} | {}".format(
-                        abs_idx, len(faces), files[abs_idx]))
-                    # run prediction
+                    frames = torch.from_numpy(frames).to(device)
+                    faces = crop_faces(frames)
+                    y_pred = predict(faces)
+                    logging.info("cv2 | {} | faces: {} | y: {} | {}".format(
+                        abs_idx, len(faces), y_pred, files[abs_idx]))
 
 
 if __name__ == '__main__':

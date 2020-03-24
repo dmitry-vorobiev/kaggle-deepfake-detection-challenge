@@ -41,11 +41,11 @@ data:
   test:
     transforms:
       - transform:
-          class: dataset.transforms.Resize
+          class: dataset.transforms.ResizeTensor
           params:
             size: 256
-      - transform:
-          class: torchvision.transforms.ToTensor
+            mode: nearest
+            normalize: true
       - transform:
           class: dataset.transforms.SpatialGradFilter
           params:

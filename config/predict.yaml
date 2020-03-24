@@ -44,4 +44,5 @@ model:
     rnn_dim: 64
     p_emb_drop: 0.2
     p_out_drop: 0.2
+    train: false
   weights: /media/dmitry/data/outputs/2020-03-23/11-54-19/checkpoint_7500_fixed.pth

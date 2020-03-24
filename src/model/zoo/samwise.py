@@ -129,7 +129,7 @@ class Samwise(nn.Module):
     def __init__(self, image_shape: Tuple[int, int, int], width: int,
                  enc_depth: int, aux_depth: int, wide=False,
                  reduce: str = 'mean', rnn_dim: Optional[int] = None,
-                 p_emb_drop=0.1, p_out_drop=0.1):
+                 p_emb_drop=0.1, p_out_drop=0.1, train=True):
         super(Samwise, self).__init__()
         C, H, W = image_shape
         if H != W:
@@ -187,27 +187,30 @@ class Samwise(nn.Module):
         if p_out_drop > 0:
             aux_out = [nn.Dropout(p=p_out_drop)] + aux_out
         self.aux_out = nn.Sequential(*aux_out)
+        self.train = train
 
-    def forward(self, x: FloatTensor, y: LongTensor):
+    def forward(self, x: FloatTensor, y: Optional[LongTensor] = None):
         N, C, D, H, W = x.shape
         hidden, x_rec, aux_0, aux_1 = [], [], [], []
 
         for f in range(D):
             h = self.encoder(x[:, :, f])
-            hc = select(h, y)
-            x1 = self.decoder(hc)
+
+            if self.train:
+                hc = select(h, y)
+                x1 = self.decoder(hc).unsqueeze(2)
+                x_rec.append(x1)
 
             h0, h1 = torch.chunk(h, 2, dim=1)
             a0 = self.aux_0(h0)
             a1 = self.aux_1(h1)
 
-            for val, arr in zip([h, x1, a0, a1],
-                                [hidden, x_rec, aux_0, aux_1]):
+            for val, arr in zip([h, a0, a1], [hidden, aux_0, aux_1]):
                 val = val.unsqueeze(2)
                 arr.append(val)
 
         hidden = torch.cat(hidden, dim=2)
-        x_rec = torch.cat(x_rec, dim=2)
+        x_rec = torch.cat(x_rec, dim=2) if self.train else None
 
         aux_out = []
         for i, aux_i in enumerate([aux_0, aux_1]):

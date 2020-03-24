@@ -48,6 +48,26 @@ class Resize(object):
         return "{}(size={})".format(Resize.__name__, self.size)
 
 
+class ResizeTensor(object):
+    def __init__(self, size: int, mode='nearest', normalize=True):
+        if not size:
+            raise AttributeError("Size should be positive number")
+        self.size = size
+        self.mode = mode
+        self.normalize = normalize
+
+    def __call__(self, t: Tensor):
+        t = t.float().unsqueeze_(0)
+        t = F.interpolate(t, size=self.size, mode=self.mode)
+        t = t.squeeze_(0)
+        if self.normalize:
+            return t / 255.
+        return t.round_().byte()
+
+    def __repr__(self):
+        return "{}(size={}, mode={})".format(Resize.__name__, self.size, self.mode)
+
+
 class PadIfNeeded(object):
     def __init__(self, size: int, mode='constant', value=0):
         if not size:
@@ -68,7 +88,8 @@ class PadIfNeeded(object):
         return F.pad(t, pad)
 
     def __repr__(self):
-        return "{}(size={})".format(PadIfNeeded.__name__, self.size)
+        return "{}(size={}, mode={}, value={})".format(
+            PadIfNeeded.__name__, self.size, self.mode, self.value)
 
 
 class SpatialGradFilter(object):
