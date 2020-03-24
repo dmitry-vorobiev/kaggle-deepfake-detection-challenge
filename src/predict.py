@@ -125,7 +125,7 @@ def main(conf: DictConfig):
     transforms = T.Compose([instantiate(val['transform']) for val in data_conf.transforms])
     logging.debug("Using transforms: {}".format(transforms))
 
-    def predict(images: List[Tensor]) -> float:
+    def _predict(images: List[Tensor]) -> float:
         x = torch.stack(list(map(transforms, images)))
         pad_amount = reader_conf.frames - x.size(0)
         if pad_amount > 0:
@@ -135,6 +135,21 @@ def main(conf: DictConfig):
         out = model(x, None)
         y_hat = model.to_y(*out).cpu().numpy()
         return y_hat.item()
+
+    def _handle(images: List[Tensor], split_idx: int, pipe_name: str):
+        abs_idx = split_idxs[split_idx]
+        path = split_files[split_idx]
+        if len(images) > 0:
+            y_hat = _predict(images)
+            df.loc[abs_idx, 'label'] = y_hat
+            path = split_files[split_idx]
+            logging.info(
+                "{} | {} | faces: {} | y: {:.03f} | {}".format(
+                    pipe_name, abs_idx, len(images), y_hat, path))
+        else:
+            ignore_split_files[split_idx] = True
+            logging.warning("No faces have found in ({}): {}".format(abs_idx, path))
+        handled_split_files[split_idx] = True
 
     reader_conf = data_conf.sample
     file_names = [file for file in os.listdir(base_dir) if not file.endswith('.json')]
@@ -181,20 +196,7 @@ def main(conf: DictConfig):
                         if prev_idx is None or prev_idx == read_idx:
                             faces += new_faces
                         else:
-                            split_idx = offset + prev_idx
-                            abs_idx = split_idxs[split_idx]
-                            if len(faces) > 0:
-                                y_pred = predict(faces)
-                                df.loc[abs_idx, 'label'] = y_pred
-                                logging.info(
-                                    "dali | abs: {} | rel: {} | faces: {} | y: {:.03f} | {}".format(
-                                        abs_idx, split_idx, len(faces),
-                                        y_pred, split_files[split_idx]))
-                            else:
-                                ignore_split_files[split_idx] = True
-                                logging.warning("No faces have found in ({}): {}".format(
-                                    abs_idx, split_files[split_idx]))
-                            handled_split_files[split_idx] = True
+                            _handle(faces, offset + prev_idx, 'dali')
                             faces = new_faces
                         prev_idx = read_idx
                     except StopIteration:
@@ -204,6 +206,15 @@ def main(conf: DictConfig):
                         logging.error(traceback.format_exc())
                         video_batch, frames = None, None
                         gc.collect()
+                # last sample in pipe
+                try:
+                    _handle(faces, offset + prev_idx, 'dali')
+                except Exception as e:
+                    import traceback
+                    logging.error(traceback.format_exc())
+                    video_batch, frames = None, None
+                    gc.collect()
+
                 del pipe, data_iter
                 gc.collect()
             logging.debug("Finished chunk [{}:{}] from {} cluster".format(offset, last, s))
@@ -215,23 +226,16 @@ def main(conf: DictConfig):
                             "decoding through OpenCV..." % num_bad_samples)
             for idx in unhandled_files:
                 abs_idx = split_idxs[idx]
+                path = split_files[idx]
                 if ignore_split_files[idx]:
-                    logging.info("Ignoring file ({}): {}".format(abs_idx, split_files[idx]))
+                    logging.info("Ignoring file ({}): {}".format(abs_idx, path))
                     continue
                 try:
-                    frames = read_frames_cv2(split_files[idx], reader_conf.frames)
+                    frames = read_frames_cv2(path, reader_conf.frames)
                     if frames is not None:
                         frames = torch.from_numpy(frames).to(device)
                         faces = crop_faces(frames)
-                        if len(faces) > 0:
-                            y_pred = predict(faces)
-                            df.loc[abs_idx, 'label'] = y_pred
-                            logging.info(
-                                "cv2 | abs: {} | rel: {} | faces: {} | y: {:.03f} | {}".format(
-                                    abs_idx, idx, len(faces), y_pred, split_files[idx]))
-                        else:
-                            logging.warning("No faces have found in ({}): {}".format(
-                                abs_idx, split_files[idx]))
+                        _handle(faces, idx, 'cv2')
                 except Exception as e:
                     import traceback
                     logging.error(traceback.format_exc())

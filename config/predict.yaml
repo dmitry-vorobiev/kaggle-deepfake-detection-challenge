@@ -14,7 +14,7 @@ general:
 data:
   test:
     type: video # just a hint, no effect
-    dir: /media/dmitry/data/dfdc-videos/dfdc_train_part_38
+    dir: /media/dmitry/data/dfdc-videos/dfdc_train_part_37
     max_open_files: 300
     sample:
       frames: 10
