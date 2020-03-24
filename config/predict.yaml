@@ -8,15 +8,17 @@ defaults:
 
 general:
   seed: 333
+  save_dir: null
+  csv_name: submission.csv
 
 data:
   test:
     type: video # just a hint, no effect
-    dir: /media/dmitry/data/dfdc-videos/dfdc_train_part_0
+    dir: /media/dmitry/data/dfdc-videos/dfdc_train_part_38
     max_open_files: 300
     sample:
       frames: 10
-      stride: 10
+      stride: 30
       num_pass: 1
     loader:
       batch_size: 1
@@ -27,6 +29,9 @@ face-detection:
   weights: /home/dmitry/projects/dfdc/data/weights/mobilenet0.25_Final.pth
   batch_size: 64
   score_thresh: 0.75
+  score_thresh_step: 0.05
+  score_thresh_min: 0.5
+  min_positive_rate: 0.6
   nms_thresh: 0.4
   top_k: 500
   keep_top_k: 5
