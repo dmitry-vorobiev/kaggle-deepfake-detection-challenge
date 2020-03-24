@@ -23,8 +23,15 @@ from data import cfg_mnet, cfg_re50
 from dataset.utils import read_labels
 from detectors.retinaface import detect, init_detector
 from detection_utils import find_faces
-from file_utils import mkdirs, dump_to_disk, get_file_list, write_file_list
+from file_utils import mkdirs, dump_to_disk, get_file_list
 from video import VideoPipe, read_frames_cv2, parse_meta, split_files_by_res
+
+
+def write_file_list(files: List[str], path: str, mask: np.ndarray) -> None:
+    with open(path, mode='w') as h:
+        for i, f in enumerate(files):
+            if mask[i] and os.path.isfile(f):
+                h.write(f'{f} {i}\n')
 
 
 def detector_cfg(args: Dict[str, any]) -> Dict[str, any]:

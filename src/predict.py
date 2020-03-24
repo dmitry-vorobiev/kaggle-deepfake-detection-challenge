@@ -22,12 +22,18 @@ sys.path.insert(0, f'/home/{os.environ["USER"]}/projects/dfdc/vendors/Pytorch_Re
 from data import cfg_mnet, cfg_re50
 from layers.functions.prior_box import PriorBox
 
-from file_utils import write_file_list
 from image import crop_square_torch
 from dataset.utils import pad_torch
 from detection_utils import max_num_faces
 from detectors.retinaface import init_detector, prepare_imgs, postproc_detections_gpu
 from video import VideoPipe, parse_meta, read_frames_cv2, split_files_by_res
+
+
+def write_file_list(files: List[str], path: str) -> None:
+    with open(path, mode='w') as h:
+        for i, f in enumerate(files):
+            if os.path.isfile(f):
+                h.write(f'{f} {i}\n')
 
 
 def merge_detector_cfg(conf: DictConfig) -> Dict[str, any]:
@@ -114,8 +120,8 @@ def main(conf: DictConfig):
     splits, size_factors = split_files_by_res(files_meta, min_unique_res_freq)
     size_factors_str = ' '.join(map(lambda f: '%.03f' % f, iter(size_factors)))
     logging.debug(
-        "Splitting files by resolution. Found {} clusters, "
-        "size multipliers are: {}".format(len(size_factors), size_factors_str))
+        "Splitting files by pixel count. Found {} clusters, "
+        "size multipliers are: {}".format(len(splits), size_factors_str))
     transforms = T.Compose([instantiate(val['transform']) for val in data_conf.transforms])
     logging.debug("Using transforms: {}".format(transforms))
 
@@ -136,19 +142,22 @@ def main(conf: DictConfig):
     df['label'] = 0.5
 
     for s, mask in enumerate(splits):
+        # maps split indices to absolute indices
         split_idxs = mask.nonzero()[0]
-        handled_split_files = np.zeros(len(split_idxs), dtype=np.bool)
-        ignore_split_files = np.zeros(len(split_idxs), dtype=np.bool)
+        split_files = [file for i, file in enumerate(files) if mask[i]]
+        logging.debug("Num files in cluster {}: {}".format(s, len(split_files)))
+        handled_split_files = np.zeros(len(split_files), dtype=np.bool)
+        ignore_split_files = np.zeros(len(split_files), dtype=np.bool)
         seq_len = int(reader_conf.frames / reader_conf.num_pass / size_factors[s])
         stride = reader_conf.stride
         logging.debug("Running predictions on cluster {} "
-                      "(size_factor={})".format(s, size_factors[s]))
+                      "(size_factor={:.03f})".format(s, size_factors[s]))
         step = data_conf.max_open_files
 
-        for offset in range(0, len(mask), step):
-            last = min(offset + step, len(mask))
+        for offset in range(0, len(split_files), step):
+            last = min(offset + step, len(split_files))
             logging.debug("Running chunk [{}:{}] from {} cluster".format(offset, last, s))
-            write_file_list(files[offset:last], path='temp', mask=mask)
+            write_file_list(split_files[offset:last], path='temp')
             logging.debug("Creating new pipe with seq_len={}, stride={}".format(seq_len, stride))
             pipe = VideoPipe('temp', seq_len=seq_len, stride=stride, device_id=0)
             pipe.build()
@@ -169,22 +178,22 @@ def main(conf: DictConfig):
                         new_faces = crop_faces(frames)
                         del video_batch, frames
 
-                        if not len(new_faces):
-                            split_idx = offset + read_idx
-                            abs_idx = split_idxs[split_idx]
-                            ignore_split_files[split_idx] = True
-                            logging.warning("No faces have found in {}, {}".format(
-                                abs_idx, files[abs_idx]))
-                        elif prev_idx is None or prev_idx == read_idx:
+                        if prev_idx is None or prev_idx == read_idx:
                             faces += new_faces
                         else:
                             split_idx = offset + prev_idx
                             abs_idx = split_idxs[split_idx]
-                            y_pred = predict(faces)
-                            df.loc[abs_idx, 'label'] = y_pred
-                            logging.info(
-                                "dali | abs: {} | rel: {} | faces: {} | y: {:.03f} | {}".format(
-                                    abs_idx, split_idx, len(faces), y_pred, files[abs_idx]))
+                            if len(faces) > 0:
+                                y_pred = predict(faces)
+                                df.loc[abs_idx, 'label'] = y_pred
+                                logging.info(
+                                    "dali | abs: {} | rel: {} | faces: {} | y: {:.03f} | {}".format(
+                                        abs_idx, split_idx, len(faces),
+                                        y_pred, split_files[split_idx]))
+                            else:
+                                ignore_split_files[split_idx] = True
+                                logging.warning("No faces have found in ({}): {}".format(
+                                    abs_idx, split_files[split_idx]))
                             handled_split_files[split_idx] = True
                             faces = new_faces
                         prev_idx = read_idx
@@ -207,27 +216,27 @@ def main(conf: DictConfig):
             for idx in unhandled_files:
                 abs_idx = split_idxs[idx]
                 if ignore_split_files[idx]:
-                    logging.info("Ignoring file {}: {}".format(abs_idx, files[abs_idx]))
+                    logging.info("Ignoring file ({}): {}".format(abs_idx, split_files[idx]))
                     continue
                 try:
-                    frames = read_frames_cv2(files[abs_idx], reader_conf.frames)
+                    frames = read_frames_cv2(split_files[idx], reader_conf.frames)
                     if frames is not None:
                         frames = torch.from_numpy(frames).to(device)
                         faces = crop_faces(frames)
-                        if len(faces):
+                        if len(faces) > 0:
                             y_pred = predict(faces)
                             df.loc[abs_idx, 'label'] = y_pred
                             logging.info(
                                 "cv2 | abs: {} | rel: {} | faces: {} | y: {:.03f} | {}".format(
-                                    abs_idx, abs_idx, len(faces), y_pred, files[abs_idx]))
+                                    abs_idx, idx, len(faces), y_pred, split_files[idx]))
                         else:
-                            logging.warning("No faces have found in {}, {}".format(
-                                abs_idx, files[abs_idx]))
+                            logging.warning("No faces have found in ({}): {}".format(
+                                abs_idx, split_files[idx]))
                 except Exception as e:
                     import traceback
                     logging.error(traceback.format_exc())
                     gc.collect()
-        logging.debug("Finished cluster {} (size_factor={})".format(s, size_factors[s]))
+        logging.debug("Finished cluster {} (size_factor={:.03f})".format(s, size_factors[s]))
 
     save_dir = conf.get('general.save_dir', os.getcwd())
     save_path = os.path.join(save_dir, conf.general.csv_name)
@@ -239,5 +248,4 @@ def main(conf: DictConfig):
 if __name__ == '__main__':
     assert torch.cuda.is_available()
     torch.backends.cudnn.benchmark = True
-
     main()
