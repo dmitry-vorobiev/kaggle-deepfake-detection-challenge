@@ -7,28 +7,23 @@ import os
 import sys
 import time
 import torch
-import torch.distributed as dist
 
 from functools import partial
 from hydra.utils import instantiate
-from ignite.contrib.handlers import ProgressBar
-from ignite.engine import Engine, Events
-from ignite.handlers import Checkpoint, DiskSaver, TerminateOnNan
-from ignite.metrics import Accuracy, Loss, Metric, RunningAverage
-from ignite.utils import convert_tensor
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 from omegaconf import DictConfig
 from torch import nn, FloatTensor, Tensor
-from torch.nn.parallel import DistributedDataParallel
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 # TODO: make proper setup.py
 sys.path.insert(0, f'/home/{os.environ["USER"]}/projects/dfdc/vendors/Pytorch_Retinaface')
 from data import cfg_mnet, cfg_re50
+from layers.functions.prior_box import PriorBox
 
 from file_utils import write_file_list
-from image import crop_square
-from detectors.retinaface import init_detector, detect
+from image import crop_square_torch
+from detection_utils import max_num_faces
+from detectors.retinaface import init_detector, prepare_imgs, postproc_detections_gpu
 from video import VideoPipe, parse_meta, read_frames_cv2, split_files_by_res
 
 
@@ -41,28 +36,37 @@ def merge_detector_cfg(conf: DictConfig) -> Dict[str, any]:
     return cfg
 
 
-def find_faces(frames: np.ndarray, detect_fn: Callable,
-               conf: Dict[str, Any]) -> List[np.ndarray]:
-    max_face_num_thresh = conf['max_face_num_thresh']
-    detections = detect_fn(frames)
-    if isinstance(frames, Tensor):
-        frames = frames.cpu().numpy()
+def find_faces(frames: Tensor, chunk_size: int, model: torch.nn.Module,
+               device: torch.device, conf: Dict[str, Any]) -> List[Tensor]:
+    D, H, W, C = frames.shape
+    frames_orig = frames.permute(0, 3, 1, 2)
+    frames, scale = prepare_imgs(frames)
+    prior_box = PriorBox(conf, image_size=(H, W))
+    priors = prior_box.forward().to(device)
+    scale = scale.to(device)
+
+    detections = []
+    for start in range(0, D, chunk_size):
+        end = start + chunk_size
+        with torch.no_grad():
+            locations, confidence, landmarks = model(frames[start:end])
+            del landmarks
+        det_chunk = postproc_detections_gpu(
+            locations, confidence, priors, scale, conf)
+        detections.extend(det_chunk)
+        del locations, confidence
+    del priors, prior_box, scale, frames
+
     num_faces = np.array(list(map(len, detections)), dtype=np.uint8)
-    max_faces = max_num_faces(num_faces, max_face_num_thresh)
+    max_faces = max_num_faces(num_faces, conf['max_face_num_thresh'])
     faces = []
-    for f in range(len(frames)):
-        for det in detections[f][:max_faces]:
-            face = crop_square(frames[f], det[:4])
+    for f in range(D):
+        for bbox in detections[f][:max_faces]:
+            face = crop_square_torch(frames_orig[f], bbox[:4])
             if face is not None:
                 faces.append(face)
-    del detections
+    del detections, frames_orig
     return faces
-
-
-def max_num_faces(face_counts: np.ndarray, unique_fraction_thresh: float) -> int:
-    unique_values, unique_freq = np.unique(face_counts, return_counts=True)
-    mask = unique_freq / len(face_counts) > unique_fraction_thresh
-    return unique_values[mask].max()
 
 
 @hydra.main(config_path="../config/predict.yaml")
@@ -84,7 +88,7 @@ def main(conf: DictConfig):
 
     face_det_conf = merge_detector_cfg(conf['face-detection'])
     detector = init_detector(face_det_conf, face_det_conf['weights'], device).to(device)
-    detect_fn = partial(detect, model=detector, cfg=face_det_conf, device=device)
+    crop_faces = partial(find_faces, model=detector, device=device, conf=face_det_conf)
 
     data_conf = conf.data.test
     base_dir = data_conf.dir
@@ -118,8 +122,8 @@ def main(conf: DictConfig):
             num_samples_read = pipe.epoch_size('reader')
 
             if num_samples_read > 0:
-                data_iter = DALIGenericIterator([pipe], ['frames', 'label'], num_samples_read,
-                                                dynamic_shape=True)
+                data_iter = DALIGenericIterator(
+                    [pipe], ['frames', 'label'], num_samples_read, dynamic_shape=True)
                 prev_idx = None
                 faces = []
                 while True:
@@ -127,7 +131,7 @@ def main(conf: DictConfig):
                         video_batch = next(data_iter)
                         frames = video_batch[0]['frames'].squeeze(0)
                         read_idx = video_batch[0]['label'].item()
-                        new_faces = find_faces(frames, detect_fn, face_det_conf)
+                        new_faces = crop_faces(frames, seq_len)
                         del video_batch, frames
 
                         if prev_idx is None or prev_idx == read_idx:

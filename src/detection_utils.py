@@ -1,11 +1,11 @@
 import numpy as np
 from torch import Tensor
-from typing import Callable, List
+from typing import Callable, List, Union
 
 from image import crop_square
 
 
-def find_faces(frames: np.ndarray, detect_fn: Callable,
+def find_faces(frames: Union[np.ndarray, Tensor], detect_fn: Callable,
                max_face_num_thresh: float) -> List[np.ndarray]:
     detections = detect_fn(frames)
     if isinstance(frames, Tensor):

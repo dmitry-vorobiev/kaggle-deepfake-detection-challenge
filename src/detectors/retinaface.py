@@ -1,11 +1,11 @@
 import math
 import numba
 import numpy as np
-from functools import partial
-from typing import Dict, List, Tuple, Union
-
 import torch
+import torchvision
+from functools import partial
 from torch import Tensor
+from typing import Any, Dict, List, Tuple, Union
 
 from layers.functions.prior_box import PriorBox
 from models.retinaface import RetinaFace
@@ -84,6 +84,20 @@ def postproc_detections(
     return dets
 
 
+def postproc_detections_gpu(locations: Tensor, confidence: Tensor,
+                            priors: Tensor, scale: Tensor, conf: Dict[str, any],
+                            resize=1) -> List[Tensor]:
+    boxes = decode_batch(locations, priors, conf['variance'])
+    boxes = boxes * scale / resize
+    scores = confidence[:, :, 1]
+    N = boxes.size(0)
+    out = []
+    for f in range(N):
+        boxes_f = postproc_frame_torch(boxes[f], scores[f], conf)
+        out.append(boxes_f)
+    return out
+
+
 def decode_batch(loc: Tensor, priors: Tensor, variances) -> Tensor:
     """Decode locations from predictions using priors to undo
     the encoding we did for offset regression at train time.
@@ -126,6 +140,30 @@ def postproc_frame(
     # keep top-K faster NMS
     dets = dets[:keep_top_k, :]
     return dets
+
+
+def postproc_frame_torch(boxes: Tensor, scores: Tensor, conf: Dict[str, Any]) -> Tensor:
+    idxs = (scores > conf['score_thresh']).nonzero().squeeze_(1)
+    if idxs.size(0):
+        boxes = boxes[idxs]
+        scores = scores[idxs]
+
+        # keep top-K before NMS
+        top_k = conf['top_k']
+        scores, idxs = scores.sort(descending=True)
+        scores, idxs = scores[:top_k], idxs[:top_k]
+        boxes = boxes[idxs]
+
+        # do NMS
+        nms_thresh = conf['nms_thresh']
+        keep_top_k = conf['keep_top_k']
+        keep = torchvision.ops.nms(boxes, scores, nms_thresh)
+        boxes = boxes[keep][:keep_top_k]
+        scores = scores[keep][:keep_top_k]
+        scores = scores.unsqueeze_(1)
+        return torch.cat([boxes, scores], dim=1)
+    else:
+        return torch.empty(0, 5, device=boxes.device, dtype=torch.float32)
 
 
 def init_detector(cfg: Dict[str, any], weights: str, device: torch.device) -> torch.nn.Module:
