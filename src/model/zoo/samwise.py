@@ -1,106 +1,11 @@
 import math
 import torch
-import torch.nn.functional as F
 
-from functools import partial
 from torch import nn, FloatTensor, LongTensor, Tensor
-from typing import Callable, Optional, Tuple, Union
+from typing import Optional, Tuple
 
-from ..layers import conv2D, Lambda
+from ..layers import conv2D, Lambda, MaxMean3D, EncoderBlock, DecoderBlock
 from ..ops import select
-
-
-ActivationFn = Union[nn.Module, Callable[[Tensor], Tensor]]
-
-
-def enc_layer(in_ch: int, out_ch: int, kernel=3, stride=1,
-              act_fn: Optional[ActivationFn] = nn.ReLU(inplace=True),
-              zero_bn=False) -> nn.Module:
-    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=stride, bias=False)
-    bn = nn.BatchNorm2d(out_ch)
-    nn.init.constant_(bn.weight, 0. if zero_bn else 1.)
-    layers = [conv, bn]
-    if act_fn is not None:
-        layers.append(act_fn)
-    return nn.Sequential(*layers)
-
-
-class EncoderBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, hd_ch: int):
-        super().__init__()
-        self.conv = nn.Sequential(
-            enc_layer(in_ch, hd_ch,  kernel=1),
-            enc_layer(hd_ch, hd_ch,  kernel=3, stride=2),
-            enc_layer(hd_ch, out_ch, kernel=1, zero_bn=True, act_fn=None))
-        self.id_conv = nn.Sequential(
-            nn.AvgPool2d(2, stride=2),
-            enc_layer(in_ch, out_ch, kernel=1, act_fn=None))
-
-    def forward(self, x):
-        x = self.conv(x) + self.id_conv(x)
-        return torch.relu_(x)
-
-
-def upscale(scale: int):
-    return Lambda(partial(F.interpolate, scale_factor=scale, mode='nearest'))
-
-
-def dec_layer(in_ch: int, out_ch: int, kernel=3, scale=1,
-              act_fn: Optional[ActivationFn] = nn.ReLU(inplace=True),
-              zero_bn=False) -> nn.Module:
-    layers = [upscale(scale)] if scale > 1 else []
-    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=1, bias=False)
-    bn = nn.BatchNorm2d(out_ch)
-    nn.init.constant_(bn.weight, 0. if zero_bn else 1.)
-    layers += [conv, bn]
-    if act_fn is not None:
-        layers.append(act_fn)
-    return nn.Sequential(*layers)
-
-
-class DecoderBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, hd_ch: int):
-        super().__init__()
-        self.conv = nn.Sequential(
-            dec_layer(in_ch, hd_ch,  kernel=1),
-            dec_layer(hd_ch, hd_ch,  kernel=3, scale=2),
-            dec_layer(hd_ch, out_ch, kernel=1, zero_bn=True, act_fn=None))
-        self.id_conv = dec_layer(in_ch, out_ch, kernel=1, scale=2, act_fn=None)
-
-    def forward(self, x):
-        x = self.conv(x) + self.id_conv(x)
-        return torch.relu_(x)
-
-
-class RNNBlock(nn.Module):
-    def __init__(self, in_ch: int, rnn_ch: int, bidirectional=False):
-        super().__init__()
-        self.gru = nn.GRU(in_ch, rnn_ch, bidirectional=bidirectional)
-        self.out_ch = rnn_ch * 3 * (2 if bidirectional else 1)
-
-    def forward(self, x):
-        N, C, D, H, W = x.shape
-        x = x.reshape(N, D, -1)
-        # N, D, C -> D, N, C
-        x = x.transpose(0, 1)
-        x, _ = self.gru(x)
-        x_mean = x.mean(0)
-        x_max, _ = x.max(0)
-        x_last = x[-1]
-        x = torch.cat([x_mean, x_max, x_last], dim=1)
-        return x
-
-
-class MaxMean3D(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        N, C, D, H, W = x.shape
-        x_mean = F.avg_pool3d(x, (D, H, W))
-        x_max = F.max_pool3d(x, (D, H, W))
-        x = torch.cat([x_mean, x_max], dim=1)
-        return x.reshape(N, -1)
 
 
 def stack_enc_blocks(width: int, start: int, end: int, wide=False):
@@ -123,6 +28,25 @@ def stack_dec_blocks(width: int, start: int, end: int, wide=False):
         block = DecoderBlock(in_ch, out_ch, h_ch)
         layers.append(block)
     return layers
+
+
+class RNNBlock(nn.Module):
+    def __init__(self, in_ch: int, rnn_ch: int, bidirectional=False):
+        super().__init__()
+        self.gru = nn.GRU(in_ch, rnn_ch, bidirectional=bidirectional)
+        self.out_ch = rnn_ch * 3 * (2 if bidirectional else 1)
+
+    def forward(self, x):
+        N, C, D, H, W = x.shape
+        x = x.reshape(N, D, -1)
+        # N, D, C -> D, N, C
+        x = x.transpose(0, 1)
+        x, _ = self.gru(x)
+        x_mean = x.mean(0)
+        x_max, _ = x.max(0)
+        x_last = x[-1]
+        x = torch.cat([x_mean, x_max, x_last], dim=1)
+        return x
 
 
 class Samwise(nn.Module):

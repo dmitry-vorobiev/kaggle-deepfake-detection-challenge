@@ -266,7 +266,10 @@ def run(conf: DictConfig):
     trainer.add_event_handler(eval_event, run_validation)
 
     try:
-        trainer.run(train_dl, max_epochs=epochs)
+        if conf.train.skip:
+            evaluator.run(valid_dl)
+        else:
+            trainer.run(train_dl, max_epochs=epochs)
     except Exception as e:
         import traceback
         print(traceback.format_exc())

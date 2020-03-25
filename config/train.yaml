@@ -8,7 +8,7 @@ hydra:
 
 defaults:
   - data: default
-  - model: samwise
+  - model: senya
   - loss: tripple
   - lr_scheduler: one-cycle
   - optimizer: adam_w
@@ -52,6 +52,7 @@ optimizer:
   step_interval: 2
 
 train:
+  skip: false
   epochs: 100
   epoch_length: 33000
   checkpoints:
