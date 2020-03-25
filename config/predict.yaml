@@ -20,6 +20,7 @@ data:
       frames: 10
       stride: 30
       num_pass: 1
+      max_samples: 20
     loader:
       batch_size: 1
       workers: 1

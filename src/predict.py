@@ -148,6 +148,11 @@ def main(conf: DictConfig):
     logging.debug("Using transforms: {}".format(transforms))
 
     def _predict(images: List[Tensor]) -> float:
+        last_idx = len(images) - 1
+        num_samples = min(data_conf.sample.max_samples, len(images))
+        idxs = np.linspace(0, last_idx, num_samples, dtype=int, endpoint=True)
+        images = list(map(images.__getitem__, idxs))
+
         x = torch.stack(list(map(transforms, images)))
         pad_amount = reader_conf.frames - x.size(0)
         if pad_amount > 0:
