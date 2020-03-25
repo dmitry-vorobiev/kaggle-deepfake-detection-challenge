@@ -82,21 +82,30 @@ def read_frames_at_indices(path: str, capture: cv2.VideoCapture,
 
 def parse_meta(files: List[str]) -> np.ndarray:
     meta = np.zeros((len(files), 3))
+    cap = None
     for i, path in enumerate(files):
-        cap = cv2.VideoCapture(path)
-        meta[i, 0] = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        meta[i, 1] = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        meta[i, 2] = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        cap.release()
+        try:
+            cap = cv2.VideoCapture(path)
+            meta[i, 0] = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            meta[i, 1] = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            meta[i, 2] = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            cap.release()
+        except Exception as e:
+            pass
+        finally:
+            if cap and cap.isOpened():
+                cap.release()
     return meta
 
 
 def split_files_by_res(files_meta: np.ndarray, min_freq: int
-                       ) -> Tuple[List[np.ndarray], np.ndarray]:
+                       ) -> Tuple[List[np.bool], List[float]]:
     px_count = files_meta[:, 1] * files_meta[:, 2]
     clusters, freq = np.unique(px_count, return_counts=True)
-    split_masks = [(px_count == c) for i, c in enumerate(clusters)
-                   if freq[i] >= min_freq]
-    size_factor = clusters / (1920 * 1080)
+    split_masks, size_factor = [], []
+    for i, c in enumerate(clusters):
+        if freq[i] >= min_freq:
+            split_masks.append(px_count == c)
+            sf = float(c / (1920 * 1080))
+            size_factor.append(sf)
     return split_masks, size_factor
-

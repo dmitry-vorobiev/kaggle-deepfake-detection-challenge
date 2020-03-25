@@ -1,4 +1,3 @@
-import datetime as dt
 import gc
 import hydra
 import logging
@@ -6,16 +5,16 @@ import numpy as np
 import os
 import pandas as pd
 import sys
-import time
 import torch
 import torchvision.transforms as T
+import traceback
 
 from functools import partial
 from hydra.utils import instantiate
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 from omegaconf import DictConfig
-from torch import nn, FloatTensor, Tensor
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from torch import Tensor
+from typing import Any, Dict, List, Tuple
 
 # TODO: make proper setup.py
 sys.path.insert(0, f'/home/{os.environ["USER"]}/projects/dfdc/vendors/Pytorch_Retinaface')
@@ -26,7 +25,7 @@ from image import crop_square_torch
 from dataset.utils import pad_torch
 from detection_utils import max_num_faces
 from detectors.retinaface import init_detector, prepare_imgs, postproc_detections_gpu
-from video import VideoPipe, parse_meta, read_frames_cv2, split_files_by_res
+from video import VideoPipe, parse_meta, read_frames_cv2
 
 
 def write_file_list(files: List[str], path: str) -> None:
@@ -34,6 +33,29 @@ def write_file_list(files: List[str], path: str) -> None:
         for i, f in enumerate(files):
             if os.path.isfile(f):
                 h.write(f'{f} {i}\n')
+
+
+def split_files_by_res(files_meta: np.ndarray, min_freq: int
+                       ) -> Tuple[List[np.ndarray], List[float], np.ndarray]:
+    px_count = files_meta[:, 1] * files_meta[:, 2]
+    clusters, freq = np.unique(px_count, return_counts=True)
+    cluster_idxs, px_mults, heap = [], [], []
+
+    for i, px_c in enumerate(clusters):
+        idxs = (px_count == px_c).nonzero()[0]
+        if freq[i] >= min_freq:
+            cluster_idxs.append(idxs)
+            px_m = float(px_c / (1920 * 1080))
+            px_mults.append(px_m)
+        else:
+            heap.append(idxs)
+
+    if len(heap) > 0:
+        heap = np.hstack(heap)
+        heap.sort()
+    else:
+        heap = np.empty(0, dtype=np.int64)
+    return cluster_idxs, px_mults, heap
 
 
 def merge_detector_cfg(conf: DictConfig) -> Dict[str, any]:
@@ -84,22 +106,25 @@ def find_faces(frames: Tensor, model: torch.nn.Module,
     return faces
 
 
+def load_model(conf: DictConfig):
+    model = instantiate(conf.model)
+    state = torch.load(conf.model.weights)
+    if 'model' in state.keys():
+        state = state['model']
+    model.load_state_dict(state)
+    return model
+
+
 @hydra.main(config_path="../config/predict.yaml")
 def main(conf: DictConfig):
     print(conf.pretty())
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
-    if 'gpu' in conf.general:
+    if 'gpu' in conf.general.keys():
         torch.cuda.set_device(conf.general.gpu)
     device = torch.device('cuda')
     torch.manual_seed(conf.general.seed)
 
-    model = instantiate(conf.model).to(device)
-    state = torch.load(conf.model.weights)
-    assert isinstance(state, dict)
-    if 'model' in state.keys():
-        state = state['model']
-    model.load_state_dict(state)
+    model = load_model(conf).to(device)
 
     face_det_conf = merge_detector_cfg(conf['face-detection'])
     detector = init_detector(face_det_conf, face_det_conf['weights'], device).to(device)
@@ -107,21 +132,18 @@ def main(conf: DictConfig):
 
     data_conf = conf.data.test
     base_dir = data_conf.dir
-    files = [os.path.join(base_dir, file)
-             for file in os.listdir(base_dir)
-             if not file.endswith('.json')]
+    file_names = [file for file in os.listdir(base_dir) if file.endswith('mp4')]
+    files = [os.path.join(base_dir, file) for file in file_names]
     if not len(files):
         raise RuntimeError("No files was found in {}".format(base_dir))
     else:
         logging.info("Total number of files: {}".format(len(files)))
     logging.info("Parsing video metadata...")
     files_meta = parse_meta(files)
-    min_unique_res_freq = int(len(files) * 0.02)
-    splits, size_factors = split_files_by_res(files_meta, min_unique_res_freq)
-    size_factors_str = ' '.join(map(lambda f: '%.03f' % f, iter(size_factors)))
-    logging.debug(
-        "Splitting files by pixel count. Found {} clusters, "
-        "size multipliers are: {}".format(len(splits), size_factors_str))
+    splits, px_mults, leftover = split_files_by_res(files_meta, 5)
+    px_mults_str = ' '.join(map(lambda f: '%.03f' % f, iter(px_mults)))
+    logging.debug("Found {} clusters, px_mults are: {}. {} items are left over".format(
+        len(splits), px_mults_str, len(leftover)))
     transforms = T.Compose([instantiate(val['transform']) for val in data_conf.transforms])
     logging.debug("Using transforms: {}".format(transforms))
 
@@ -137,36 +159,49 @@ def main(conf: DictConfig):
         return y_hat.item()
 
     def _handle(images: List[Tensor], split_idx: int, pipe_name: str):
-        abs_idx = split_idxs[split_idx]
-        path = split_files[split_idx]
+        glob_idx = split_idxs[split_idx]
+        file_path = split_files[split_idx]
         if len(images) > 0:
             y_hat = _predict(images)
-            df.loc[abs_idx, 'label'] = y_hat
-            path = split_files[split_idx]
-            logging.info(
-                "{} | {} | faces: {} | y: {:.03f} | {}".format(
-                    pipe_name, abs_idx, len(images), y_hat, path))
+            df.loc[glob_idx, 'label'] = y_hat
+            logging.info("{} | {} | faces: {} | y: {:.03f} | {}".format(
+                pipe_name, glob_idx, len(images), y_hat, file_path))
         else:
             ignore_split_files[split_idx] = True
-            logging.warning("No faces have found in ({}): {}".format(abs_idx, path))
-        handled_split_files[split_idx] = True
+            logging.warning("No faces have found in ({}): {}".format(glob_idx, file_path))
+
+    def _on_exception(e: Exception):
+        nonlocal video_batch, frames, faces
+        logging.error(traceback.format_exc())
+        video_batch, frames = None, None
+        faces = []
+        gc.collect()
+
+    def _save():
+        save_dir = conf.get('general.save_dir', os.getcwd())
+        save_path = os.path.join(save_dir, conf.general.csv_name)
+        logging.info("Saving predictions to {}".format(save_path))
+        for _ in range(5):
+            try:
+                df.to_csv(save_path, index=False)
+                break
+            except Exception as e:
+                continue
 
     reader_conf = data_conf.sample
-    file_names = [file for file in os.listdir(base_dir) if not file.endswith('.json')]
     df = pd.DataFrame(file_names, columns=['filename'])
     df['label'] = 0.5
+    del file_names, files_meta
 
-    for s, mask in enumerate(splits):
-        # maps split indices to absolute indices
-        split_idxs = mask.nonzero()[0]
-        split_files = [file for i, file in enumerate(files) if mask[i]]
+    for s, split_idxs in enumerate(splits):
+        split_files = list(map(lambda i: files[i], split_idxs))
         logging.debug("Num files in cluster {}: {}".format(s, len(split_files)))
         handled_split_files = np.zeros(len(split_files), dtype=np.bool)
         ignore_split_files = np.zeros(len(split_files), dtype=np.bool)
-        seq_len = int(reader_conf.frames / reader_conf.num_pass / size_factors[s])
+        seq_len = int(reader_conf.frames / reader_conf.num_pass / max(px_mults[s], 1.0))
         stride = reader_conf.stride
-        logging.debug("Running predictions on cluster {} "
-                      "(size_factor={:.03f})".format(s, size_factors[s]))
+        logging.debug(
+            "Running predictions on cluster {} (size_factor={:.03f})".format(s, px_mults[s]))
         step = data_conf.max_open_files
 
         for offset in range(0, len(split_files), step):
@@ -183,7 +218,7 @@ def main(conf: DictConfig):
                 logging.debug("Creating DALI iterator...")
                 data_iter = DALIGenericIterator(
                     [pipe], ['frames', 'label'], num_samples_read, dynamic_shape=True)
-                prev_idx = None
+                video_batch, frames, prev_idx = None, None, None
                 faces = []
                 while True:
                     try:
@@ -196,27 +231,26 @@ def main(conf: DictConfig):
                         if prev_idx is None or prev_idx == read_idx:
                             faces += new_faces
                         else:
-                            _handle(faces, offset + prev_idx, 'dali')
+                            abs_idx = offset + prev_idx
+                            _handle(faces, abs_idx, 'dali')
+                            handled_split_files[abs_idx] = True
                             faces = new_faces
                         prev_idx = read_idx
                     except StopIteration:
                         break
                     except Exception as e:
-                        import traceback
-                        logging.error(traceback.format_exc())
-                        video_batch, frames = None, None
-                        gc.collect()
+                        _on_exception(e)
                 # last sample in pipe
                 try:
-                    _handle(faces, offset + prev_idx, 'dali')
+                    abs_idx = offset + prev_idx
+                    _handle(faces, abs_idx, 'dali')
+                    handled_split_files[abs_idx] = True
                 except Exception as e:
-                    import traceback
-                    logging.error(traceback.format_exc())
-                    video_batch, frames = None, None
-                    gc.collect()
+                    _on_exception(e)
 
                 del pipe, data_iter
                 gc.collect()
+                _save()
             logging.debug("Finished chunk [{}:{}] from {} cluster".format(offset, last, s))
 
         unhandled_files = (~handled_split_files).nonzero()[0]
@@ -232,20 +266,40 @@ def main(conf: DictConfig):
                     continue
                 try:
                     frames = read_frames_cv2(path, reader_conf.frames)
-                    if frames is not None:
+                    if frames is not None and len(frames) > 0:
                         frames = torch.from_numpy(frames).to(device)
                         faces = crop_faces(frames)
+                        del frames
                         _handle(faces, idx, 'cv2')
+                        del faces
                 except Exception as e:
-                    import traceback
-                    logging.error(traceback.format_exc())
-                    gc.collect()
-        logging.debug("Finished cluster {} (size_factor={:.03f})".format(s, size_factors[s]))
+                    _on_exception(e)
+        del handled_split_files, unhandled_files, ignore_split_files
+        _save()
+        logging.debug("Finished cluster {} (size_factor={:.03f})".format(s, px_mults[s]))
 
-    save_dir = conf.get('general.save_dir', os.getcwd())
-    save_path = os.path.join(save_dir, conf.general.csv_name)
-    logging.info("Saving predictions to {}".format(save_path))
-    df.to_csv(save_path, index=False)
+    logging.info("Running predictions on leftover ({} samples)".format(len(leftover)))
+    for idx in leftover:
+        path = files[idx]
+        try:
+            frames = read_frames_cv2(path, reader_conf.frames)
+            if frames is not None and len(frames) > 0:
+                frames = torch.from_numpy(frames).to(device)
+                faces = crop_faces(frames)
+                del frames
+                if len(faces) > 0:
+                    y_hat = _predict(faces)
+                    df.loc[idx, 'label'] = y_hat
+                    logging.info("cv2 | {} | faces: {} | y: {:.03f} | {}".format(
+                        idx, len(faces), y_hat, path))
+                else:
+                    logging.warning("No faces have found in ({}): {}".format(idx, path))
+                del faces
+        except Exception as e:
+            _on_exception(e)
+    logging.info("Finished leftover")
+
+    _save()
     logging.info("DONE")
 
 

@@ -53,13 +53,13 @@ optimizer:
 
 train:
   epochs: 100
-  epoch_length: 15000
+  epoch_length: 33000
   checkpoints:
     load: null
     base_dir: null
     interval_epoch: 1
     interval_iteration: 500
-    max_checkpoints: 20
+    max_checkpoints: 100
 
 validate:
   interval: 1

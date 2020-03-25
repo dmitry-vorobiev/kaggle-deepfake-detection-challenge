@@ -187,7 +187,7 @@ class Samwise(nn.Module):
         if p_out_drop > 0:
             aux_out = [nn.Dropout(p=p_out_drop)] + aux_out
         self.aux_out = nn.Sequential(*aux_out)
-        self.train = train
+        self.is_train = train
 
     def forward(self, x: FloatTensor, y: Optional[LongTensor] = None):
         N, C, D, H, W = x.shape
@@ -196,7 +196,7 @@ class Samwise(nn.Module):
         for f in range(D):
             h = self.encoder(x[:, :, f])
 
-            if self.train:
+            if self.is_train:
                 hc = select(h, y)
                 x1 = self.decoder(hc).unsqueeze(2)
                 x_rec.append(x1)
@@ -210,7 +210,7 @@ class Samwise(nn.Module):
                 arr.append(val)
 
         hidden = torch.cat(hidden, dim=2)
-        x_rec = torch.cat(x_rec, dim=2) if self.train else None
+        x_rec = torch.cat(x_rec, dim=2) if self.is_train else None
 
         aux_out = []
         for i, aux_i in enumerate([aux_0, aux_1]):
