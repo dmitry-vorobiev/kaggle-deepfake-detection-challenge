@@ -112,6 +112,7 @@ def load_model(conf: DictConfig):
     if 'model' in state.keys():
         state = state['model']
     model.load_state_dict(state)
+    model.eval()
     return model
 
 
@@ -159,7 +160,8 @@ def main(conf: DictConfig):
             x = pad_torch(x, pad_amount, 'start')
         # D, C, H, W -> C, D, H, W
         x = x.transpose(0, 1).unsqueeze_(0)
-        out = model(x, None)
+        with torch.no_grad():
+            out = model(x, None)
         y_hat = model.to_y(*out).cpu().numpy()
         return y_hat.item()
 

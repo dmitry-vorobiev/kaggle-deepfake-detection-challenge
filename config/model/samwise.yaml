@@ -6,7 +6,9 @@ model:
     enc_depth: 5
     aux_depth: 3
     wide: false
-    reduce: max-mean
-    rnn_dim: 64
+    reduce: rnn
+    rnn_dim: 256
     p_emb_drop: 0.2
     p_out_drop: 0.2
+    act_fn: relu
+    neg_slope: 0.0

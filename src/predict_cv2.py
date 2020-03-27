@@ -24,16 +24,8 @@ from image import crop_square_torch
 from dataset.utils import pad_torch
 from detection_utils import max_num_faces
 from detectors.retinaface import init_detector, prepare_imgs, postproc_detections_gpu
+from predict import merge_detector_cfg, load_model
 from video import read_frames_cv2
-
-
-def merge_detector_cfg(conf: DictConfig) -> Dict[str, any]:
-    cfg = cfg_mnet if conf.encoder == 'mnet' else cfg_re50
-    for key in "batch_size, score_thresh, nms_thresh, top_k, keep_top_k".split(", "):
-        if key not in conf or conf[key] is None:
-            raise AttributeError("Missing {} in detector config".format(key))
-    cfg = {**cfg, **conf}
-    return cfg
 
 
 def find_faces(frames: Tensor, model: torch.nn.Module,
@@ -68,15 +60,6 @@ def find_faces(frames: Tensor, model: torch.nn.Module,
                 faces.append(face)
     del detections, frames_orig
     return faces
-
-
-def load_model(conf: DictConfig):
-    model = instantiate(conf.model)
-    state = torch.load(conf.model.weights)
-    if 'model' in state.keys():
-        state = state['model']
-    model.load_state_dict(state)
-    return model
 
 
 @hydra.main(config_path="../config/predict.yaml")
@@ -117,7 +100,8 @@ def main(conf: DictConfig):
             x = pad_torch(x, pad_amount, 'start')
         # D, C, H, W -> C, D, H, W
         x = x.transpose(0, 1).unsqueeze_(0)
-        out = model(x, None)
+        with torch.no_grad():
+            out = model(x, None)
         y_hat = model.to_y(*out).cpu().numpy()
         return y_hat.item()
 

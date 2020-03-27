@@ -8,13 +8,13 @@ hydra:
 
 defaults:
   - data: default
-  - model: senya
+  - model: samwise
   - loss: tripple
   - lr_scheduler: one-cycle
   - optimizer: adam_w
 
 general:
-  gpu: 1
+  gpu: 0
   seed: 333
 
 distributed:
@@ -25,8 +25,8 @@ distributed:
 data:
   train:
     type: hdf5
-    dir: /media/dmitry/other/dfdc-crops/hdf5
-    chunks: 5 - 50
+    dir: /home/dmitry/projects/dfdc/data/dfdc-crops
+    chunks: 0 - 50
     dir_list: ''
     sample:
       frames: 10
@@ -38,7 +38,7 @@ data:
       workers: 1
   val:
     type: hdf5
-    dir: /media/dmitry/other/dfdc-crops/hdf5
+    dir: /home/dmitry/projects/dfdc/data/dfdc-crops
     chunks: 0, 1, 2, 3, 4
     sample:
       frames: 10
@@ -54,7 +54,7 @@ optimizer:
 train:
   skip: false
   epochs: 100
-  epoch_length: 33000
+  epoch_length: 16000
   checkpoints:
     load: null
     base_dir: null
@@ -66,5 +66,5 @@ validate:
   interval: 1
 
 logging:
-  model: true
+  model: false
   iter_freq: 100

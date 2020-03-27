@@ -6,9 +6,9 @@ model:
     enc_depth: 5
     aux_depth: 3
     wide: false
-    rnn_dim: 256
-    p_emb_drop: 0.2
+    rnn_dim: 128
+    p_emb_drop: 0.0
     p_out_drop: 0.2
     enc_att: [2]
     dec_att: [2]
-    aux_att: null
+    aux_att: []

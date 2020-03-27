@@ -7,8 +7,26 @@ from typing import Any, Callable, Union, Optional
 
 from torch.nn import functional as F
 
+relu = nn.ReLU(inplace=True)
 
-def conv2D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=False, a=0) -> nn.Conv2d:
+
+def get_a_from_act_fn(func: Optional[nn.Module] = None) -> float:
+    if func is None:
+        a = 1.0
+    elif isinstance(func, nn.ReLU):
+        a = 0.0
+    elif isinstance(func, nn.PReLU):
+        # can't pass PReLU with per-channel parameters from config
+        assert func.num_parameters == 1
+        a = func.weight.item()
+    elif isinstance(func, nn.LeakyReLU):
+        a = func.negative_slope
+    else:
+        raise NotImplementedError()
+    return a
+
+
+def conv2D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=False, a=0.) -> nn.Conv2d:
     pad = kernel // 2
     conv = nn.Conv2d(in_ch, out_ch, kernel_size=kernel, stride=stride,
                      padding=pad, bias=bias)
@@ -18,7 +36,7 @@ def conv2D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=False, a=0) -> nn.C
     return conv
 
 
-def conv3D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=False, a=0) -> nn.Conv3d:
+def conv3D(in_ch: int, out_ch: int, kernel=3, stride=1, bias=False, a=0.) -> nn.Conv3d:
     pad = kernel // 2
     conv = nn.Conv3d(in_ch, out_ch,
                      kernel_size=(1, kernel, kernel),
@@ -82,9 +100,10 @@ ActivationFn = Union[nn.Module, Callable[[Tensor], Tensor]]
 
 
 def enc_layer(in_ch: int, out_ch: int, kernel=3, stride=1,
-              act_fn: Optional[ActivationFn] = nn.ReLU(inplace=True),
+              act_fn: Optional[ActivationFn] = relu,
               zero_bn=False) -> nn.Module:
-    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=stride, bias=False)
+    a = get_a_from_act_fn(act_fn)
+    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=stride, bias=False, a=a)
     bn = nn.BatchNorm2d(out_ch)
     nn.init.constant_(bn.weight, 0. if zero_bn else 1.)
     layers = [conv, bn]
@@ -94,19 +113,21 @@ def enc_layer(in_ch: int, out_ch: int, kernel=3, stride=1,
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, hd_ch: int):
+    def __init__(self, in_ch: int, out_ch: int, hd_ch: int,
+                 act_fn: Optional[ActivationFn] = relu):
         super().__init__()
         self.conv = nn.Sequential(
-            enc_layer(in_ch, hd_ch,  kernel=1),
-            enc_layer(hd_ch, hd_ch,  kernel=3, stride=2),
+            enc_layer(in_ch, hd_ch,  kernel=1, act_fn=act_fn),
+            enc_layer(hd_ch, hd_ch,  kernel=3, stride=2, act_fn=act_fn),
             enc_layer(hd_ch, out_ch, kernel=1, zero_bn=True, act_fn=None))
         self.id_conv = nn.Sequential(
             nn.AvgPool2d(2, stride=2),
             enc_layer(in_ch, out_ch, kernel=1, act_fn=None))
+        self.act_fn = act_fn
 
     def forward(self, x):
         x = self.conv(x) + self.id_conv(x)
-        return torch.relu_(x)
+        return self.act_fn(x)
 
 
 def upscale(scale: int):
@@ -114,10 +135,10 @@ def upscale(scale: int):
 
 
 def dec_layer(in_ch: int, out_ch: int, kernel=3, scale=1,
-              act_fn: Optional[ActivationFn] = nn.ReLU(inplace=True),
-              zero_bn=False) -> nn.Module:
+              act_fn: Optional[ActivationFn] = relu, zero_bn=False) -> nn.Module:
     layers = [upscale(scale)] if scale > 1 else []
-    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=1, bias=False)
+    a = get_a_from_act_fn(act_fn)
+    conv = conv2D(in_ch, out_ch, kernel=kernel, stride=1, bias=False, a=a)
     bn = nn.BatchNorm2d(out_ch)
     nn.init.constant_(bn.weight, 0. if zero_bn else 1.)
     layers += [conv, bn]
@@ -127,17 +148,19 @@ def dec_layer(in_ch: int, out_ch: int, kernel=3, scale=1,
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, hd_ch: int):
+    def __init__(self, in_ch: int, out_ch: int, hd_ch: int,
+                 act_fn: Optional[ActivationFn] = relu):
         super().__init__()
         self.conv = nn.Sequential(
-            dec_layer(in_ch, hd_ch,  kernel=1),
-            dec_layer(hd_ch, hd_ch,  kernel=3, scale=2),
+            dec_layer(in_ch, hd_ch,  kernel=1, act_fn=act_fn),
+            dec_layer(hd_ch, hd_ch,  kernel=3, scale=2, act_fn=act_fn),
             dec_layer(hd_ch, out_ch, kernel=1, zero_bn=True, act_fn=None))
         self.id_conv = dec_layer(in_ch, out_ch, kernel=1, scale=2, act_fn=None)
+        self.act_fn = act_fn
 
     def forward(self, x):
         x = self.conv(x) + self.id_conv(x)
-        return torch.relu_(x)
+        return self.act_fn(x)
 
 
 class MaxMean2D(nn.Module):
@@ -153,12 +176,14 @@ class MaxMean2D(nn.Module):
 
 
 class MaxMean3D(nn.Module):
-    def __init__(self):
+    def __init__(self, reduce_frames=True):
         super().__init__()
+        self.reduce_frames = reduce_frames
 
     def forward(self, x):
         N, C, D, H, W = x.shape
-        x_mean = F.avg_pool3d(x, (D, H, W))
-        x_max = F.max_pool3d(x, (D, H, W))
+        kernel = (D, H, W) if self.reduce_frames else (1, H, W)
+        x_mean = F.avg_pool3d(x, kernel)
+        x_max = F.max_pool3d(x, kernel)
         x = torch.cat([x_mean, x_max], dim=1)
-        return x.reshape(N, -1)
+        return x.reshape(N, -1) if self.reduce_frames else x.reshape(N, -1, D)

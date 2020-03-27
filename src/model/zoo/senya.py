@@ -58,6 +58,22 @@ def stack_dec_blocks(width: int, start: int, end: int, wide=False,
     return layers
 
 
+def stack_aux_blocks(width: int, start: int, end: int,
+                     attention: Optional[List[int]] = None):
+    if attention is None:
+        attention = []
+    layers = []
+    ch = width * 2**start
+    for i in range(start, end):
+        if i in attention:
+            assert not ch % 4
+            att = EfficientAttention(ch, ch, ch//4, ch)
+            layers.append(att)
+        block = EncoderBlock(ch, ch, ch)
+        layers.append(block)
+    return layers
+
+
 class SenyaGanjubas(nn.Module):
     def __init__(self, image_shape: Tuple[int, int, int], width: int,
                  enc_depth: int, aux_depth: int, rnn_dim: int, wide=False,
@@ -91,18 +107,22 @@ class SenyaGanjubas(nn.Module):
             att = aux_att
             if att is not None:
                 att = [a + enc_depth - 1 for a in aux_att]
-            aux_branch = stack_enc_blocks(
+            aux_branch = stack_aux_blocks(
                 width // 2, enc_depth - 1, enc_depth - 1 + aux_depth,
-                wide=wide, attention=att)
+                attention=att)
             if p_emb_drop > 0:
                 aux_branch = [nn.Dropout2d(p=p_emb_drop)] + aux_branch
-            setattr(self, f'aux_{i}', nn.Sequential(*aux_branch))
+            setattr(self, f'aux_{i}', nn.Sequential(*aux_branch, MaxMean2D()))
 
-        self.pool = MaxMean2D()
-        aux_dim = width * 2 ** (enc_depth + aux_depth)
+        # aux_dim = width * 2 ** (enc_depth + aux_depth)
+        aux_dim = width * 2 ** enc_depth
         self.rnn = RNNBlock(aux_dim, rnn_dim, bidirectional=True)
 
-        out_layers = [nn.Linear(self.rnn.out_ch, 1, bias=False)]
+        out_layers = [
+            nn.Linear(self.rnn.out_ch, 64, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 1, bias=False)
+        ]
         if p_out_drop > 0:
             out_layers = [nn.Dropout(p=p_out_drop)] + out_layers
         self.out = nn.Sequential(*out_layers)
@@ -121,8 +141,8 @@ class SenyaGanjubas(nn.Module):
                 x_rec.append(x1)
 
             h0, h1 = torch.chunk(h, 2, dim=1)
-            a0 = self.pool(self.aux_0(h0))
-            a1 = self.pool(self.aux_1(h1))
+            a0 = self.aux_0(h0)
+            a1 = self.aux_1(h1)
 
             for val, arr in zip([h, a0, a1], [hidden, aux_0, aux_1]):
                 val = val.unsqueeze(2)
