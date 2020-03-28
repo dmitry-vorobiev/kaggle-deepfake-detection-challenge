@@ -8,8 +8,8 @@ hydra:
 
 defaults:
   - data: default
-  - model: samwise
-  - loss: tripple
+  - model: encoder
+  - loss: forensic-transfer
   - lr_scheduler: one-cycle
   - optimizer: adam_w
 
@@ -21,6 +21,10 @@ distributed:
   backend: null
   local_rank: 0
   url: env://
+
+tpu:
+  enabled: false
+  num_cores: 1
 
 data:
   train:

@@ -5,6 +5,7 @@ data:
           class: dataset.transforms.Resize
           params:
             size: 256
+            mode: 0
       - transform:
           class: torchvision.transforms.ToTensor
       - transform:
