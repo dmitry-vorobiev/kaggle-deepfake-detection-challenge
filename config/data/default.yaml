@@ -44,7 +44,7 @@ data:
           class: dataset.transforms.ResizeTensor
           params:
             size: 256
-            mode: nearest
+            mode: bicubic
             normalize: true
       - transform:
           class: dataset.transforms.SpatialGradFilter

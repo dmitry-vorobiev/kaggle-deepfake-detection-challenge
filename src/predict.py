@@ -13,7 +13,7 @@ from functools import partial
 from hydra.utils import instantiate
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 from omegaconf import DictConfig
-from torch import Tensor
+from torch import nn, Tensor
 from typing import Any, Dict, List, Tuple
 
 # TODO: make proper setup.py
@@ -162,8 +162,8 @@ def main(conf: DictConfig):
         x = x.transpose(0, 1).unsqueeze_(0)
         with torch.no_grad():
             out = model(x, None)
-        y_hat = model.to_y(*out).cpu().numpy()
-        return y_hat.item()
+        y_pred = model.to_y(*out).cpu().item()
+        return y_pred
 
     def _handle(images: List[Tensor], split_idx: int, pipe_name: str):
         glob_idx = split_idxs[split_idx]

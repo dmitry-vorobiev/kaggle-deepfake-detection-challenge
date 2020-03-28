@@ -55,10 +55,13 @@ class ResizeTensor(object):
         self.size = size
         self.mode = mode
         self.normalize = normalize
+        self.align_corners = False
+        if mode in ['bilinear', 'bicubic']:
+            self.align_corners = True
 
     def __call__(self, t: Tensor):
         t = t.float().unsqueeze_(0)
-        t = F.interpolate(t, size=self.size, mode=self.mode)
+        t = F.interpolate(t, size=self.size, mode=self.mode, align_corners=self.align_corners)
         t = t.squeeze_(0)
         if self.normalize:
             return t / 255.

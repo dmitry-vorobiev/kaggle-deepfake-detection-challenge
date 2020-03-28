@@ -46,9 +46,11 @@ model:
     enc_depth: 5
     aux_depth: 3
     wide: false
-    reduce: max-mean
-    rnn_dim: 64
+    reduce: rnn
+    rnn_dim: 256
     p_emb_drop: 0.2
     p_out_drop: 0.2
+    act_fn: relu
+    neg_slope: 0.0
     train: false
-  weights: /media/dmitry/data/outputs/2020-03-23/11-54-19/checkpoint_7500_fixed.pth
+  weights: /media/dmitry/data/outputs/2020-03-27/15-07-23/checkpoint_45000.pth

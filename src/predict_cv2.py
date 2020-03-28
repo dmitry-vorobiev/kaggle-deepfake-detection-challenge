@@ -31,6 +31,7 @@ from video import read_frames_cv2
 def find_faces(frames: Tensor, model: torch.nn.Module,
                device: torch.device, conf: Dict[str, Any]) -> List[Tensor]:
     D, H, W, C = frames.shape
+    # D, H, W, C -> D, C, H, W
     frames_orig = frames.permute(0, 3, 1, 2)
     frames, scale = prepare_imgs(frames)
     prior_box = PriorBox(conf, image_size=(H, W))
@@ -102,8 +103,8 @@ def main(conf: DictConfig):
         x = x.transpose(0, 1).unsqueeze_(0)
         with torch.no_grad():
             out = model(x, None)
-        y_hat = model.to_y(*out).cpu().numpy()
-        return y_hat.item()
+        y_pred = model.to_y(*out).cpu().item()
+        return y_pred
 
     def _save():
         save_dir = conf.get('general.save_dir', os.getcwd())
