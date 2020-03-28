@@ -20,6 +20,14 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 from model import ModelOut
 from utils import create_train_loader, create_val_loader
 
+try:
+    import torch_xla
+    import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.parallel_loader as pl
+    import torch_xla.distributed.xla_multiprocessing as xmp
+except ImportError:
+    logging.debug("torch_xla package not found")
+
 Batch = Tuple[Tensor, Tensor]
 Losses = Dict[str, Tensor]
 Criterion = Callable[[ModelOut, Batch], Losses]
@@ -78,6 +86,27 @@ def create_trainer(model: nn.Module, criterion: Criterion, optim: Any,
         losses['loss'].backward()
         if not (iteration + 1) % update_freq:
             optim.step()
+
+        engine.state.lr = [p['lr'] for p in optim.param_groups]
+        return gather_outs(model, batch, out, losses)
+
+    engine = Engine(_update)
+    if metrics:
+        add_metrics(engine, metrics)
+    return engine
+
+
+def create_tpu_trainer(model: nn.Module, criterion: Criterion, optim: Any,
+                       device: torch.device, conf, metrics: Optional[Metrics] = None):
+    def _update(e: Engine, batch: Batch) -> Dict[str, Tensor]:
+        model.train()
+        batch = _prepare_batch(batch, device, non_blocking=True)
+        out = model(*batch)
+        losses = criterion(out, batch)
+
+        optim.zero_grad()
+        losses['loss'].backward()
+        xm.optimizer_step(optim, barrier=conf.tpu.num_cores < 2)
 
         engine.state.lr = [p['lr'] for p in optim.param_groups]
         return gather_outs(model, batch, out, losses)
@@ -158,25 +187,39 @@ def run(conf: DictConfig):
     local_rank = dist_conf.local_rank
     backend = dist_conf.backend
     distributed = backend is not None
+    use_tpu = conf.tpu.enabled
 
-    if local_rank == 0:
-        print(conf.pretty())
-    if distributed:
-        rank = dist.get_rank()
-        torch.cuda.set_device(local_rank)
-        num_replicas = dist.get_world_size()
+    if use_tpu:
+        rank = xm.get_ordinal()
+        num_replicas = xm.xrt_world_size()
+        device = xm.xla_device()
+    else:
+        if distributed:
+            rank = dist.get_rank()
+            num_replicas = dist.get_world_size()
+            torch.cuda.set_device(local_rank)
+        else:
+            rank = 0
+            num_replicas = 1
+            torch.cuda.set_device(conf.general.gpu)
+        device = torch.device('cuda')
+
+    if num_replicas > 1:
         epoch_length = epoch_length // num_replicas
         loader_args = dict(rank=rank, num_replicas=num_replicas)
     else:
-        rank = 0
-        torch.cuda.set_device(conf.general.gpu)
         loader_args = dict()
-
-    device = torch.device('cuda')
     torch.manual_seed(conf.general.seed)
+
+    if rank == 0:
+        print(conf.pretty())
 
     train_dl = create_train_loader(conf.data.train, epoch_length=epoch_length, **loader_args)
     valid_dl = create_val_loader(conf.data.val, **loader_args)
+    train_sampler = train_dl.sampler
+    if use_tpu:
+        train_dl = pl.ParallelLoader(train_dl, [device]).per_device_loader(device)
+        valid_dl = pl.ParallelLoader(valid_dl, [device]).per_device_loader(device)
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
@@ -191,7 +234,8 @@ def run(conf: DictConfig):
     loss = instantiate(conf.loss)
     optim = instantiate(conf.optimizer, model.parameters())
     metrics = create_metrics(loss.keys(), device if distributed else None)
-    trainer = create_trainer(model, loss, optim, device, conf, metrics)
+    build_trainer_fn = create_tpu_trainer if use_tpu else create_trainer
+    trainer = build_trainer_fn(model, loss, optim, device, conf, metrics)
     evaluator = create_evaluator(model, loss, device, metrics)
 
     every_iteration = Events.ITERATION_COMPLETED
@@ -253,10 +297,9 @@ def run(conf: DictConfig):
     if 'load' in cp.keys() and cp.load:
         Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
 
-    sampler = train_dl.sampler
-    assert sampler is not None
+    assert train_sampler is not None
     trainer.add_event_handler(
-        Events.EPOCH_STARTED, lambda e: sampler.set_epoch(e.state.epoch - 1))
+        Events.EPOCH_STARTED, lambda e: train_sampler.set_epoch(e.state.epoch - 1))
 
     def run_validation(e: Engine):
         torch.cuda.synchronize(device)
@@ -269,7 +312,7 @@ def run(conf: DictConfig):
         if conf.train.skip:
             evaluator.run(valid_dl)
         else:
-            trainer.run(train_dl, max_epochs=epochs)
+            trainer.run(train_dl, max_epochs=epochs, epoch_length=epoch_length)
     except Exception as e:
         import traceback
         print(traceback.format_exc())
@@ -283,6 +326,11 @@ def main(conf: DictConfig):
     local_rank = dist_conf.local_rank
     backend = dist_conf.backend
     distributed = backend is not None
+    use_tpu = conf.tpu.enabled
+
+    if not use_tpu:
+        assert torch.cuda.is_available()
+        torch.backends.cudnn.benchmark = True
 
     if distributed:
         dist.init_process_group(backend, init_method=dist_conf.url)
@@ -294,7 +342,10 @@ def main(conf: DictConfig):
             print("\n")
 
     try:
-        run(conf)
+        if use_tpu and conf.tpu.num_cores > 1:
+            xmp.spawn(_mp_fn, args=(conf, ), nprocs=conf.tpu.num_cores, start_method='fork')
+        else:
+            run(conf)
     except KeyboardInterrupt:
         print("Shutting down...")
     except Exception as e:
@@ -306,7 +357,12 @@ def main(conf: DictConfig):
         dist.destroy_process_group()
 
 
+def _mp_fn(rank, conf: DictConfig):
+    if xm is None:
+        raise RuntimeError("torch_xla module not found")
+    torch.set_default_tensor_type('torch.FloatTensor')
+    run(conf)
+
+
 if __name__ == '__main__':
-    assert torch.cuda.is_available()
-    torch.backends.cudnn.benchmark = True
     main()

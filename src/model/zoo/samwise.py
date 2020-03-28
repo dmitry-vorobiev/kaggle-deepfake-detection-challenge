@@ -4,7 +4,7 @@ import torch
 from torch import nn, FloatTensor, LongTensor, Tensor
 from typing import Optional, Tuple
 
-from ..layers import conv2D, get_a_from_act_fn, relu, ActivationFn, Lambda, MaxMean2D, \
+from ..layers import conv2D, relu, ActivationFn, Lambda, MaxMean2D, \
     MaxMean3D, EncoderBlock, DecoderBlock
 from ..ops import select
 
@@ -47,16 +47,15 @@ class RNNBlock(nn.Module):
     def __init__(self, in_ch: int, rnn_ch: int, bidirectional=False):
         super().__init__()
         self.gru = nn.GRU(in_ch, rnn_ch, bidirectional=bidirectional)
-        self.out_ch = rnn_ch * (2 if bidirectional else 1)
+        self.out_ch = rnn_ch * 2 * (2 if bidirectional else 1)
 
     def forward(self, x):
         # N, C, D -> D, N, C
         x = x.permute(2, 0, 1)
         x, _ = self.gru(x)
-#         x_mean = x.mean(0)
-#         x_max, _ = x.max(0)
-#         x_last = x[-1]
-#         x = torch.cat([x_mean, x_max, x_last], dim=1)
+        x_mean = x.mean(0)
+        x_max, _ = x.max(0)
+        x = torch.cat([x_mean, x_max], dim=1)
         return x[-1]
 
 

@@ -1,5 +1,6 @@
 from functools import partial
 
+import re
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
@@ -8,6 +9,16 @@ from typing import Any, Callable, Union, Optional
 from torch.nn import functional as F
 
 relu = nn.ReLU(inplace=True)
+
+
+def is_torch_version_ge_1_6():
+    m = re.match(r"(\d)\.(\d)", torch.__version__)
+    if len(m.groups()) == 2:
+        major = m.group(1)
+        minor = m.group(2)
+        if int(major) >= 1 and int(minor) >= 6:
+            return True
+    return False
 
 
 def get_a_from_act_fn(func: Optional[nn.Module] = None) -> float:
@@ -131,7 +142,17 @@ class EncoderBlock(nn.Module):
 
 
 def upscale(scale: int):
-    return Lambda(partial(F.interpolate, scale_factor=scale, mode='nearest'))
+    """
+    /anaconda3/envs/torch-xla-nightly/lib/python3.6/site-packages/torch/nn/functional.py:2875:
+    UserWarning: The default behavior for interpolate/upsample with float scale_factor
+    will change in 1.6.0 to align with other frameworks/libraries, and use scale_factor directly,
+    instead of relying on the computed output size. If you wish to keep the old behavior,
+    please set recompute_scale_factor=True. See the documentation of nn.Upsample for details.
+    """
+    kwargs = dict()
+    if is_torch_version_ge_1_6():
+        kwargs = dict(recompute_scale_factor=True)
+    return Lambda(partial(F.interpolate, scale_factor=scale, mode='nearest', **kwargs))
 
 
 def dec_layer(in_ch: int, out_ch: int, kernel=3, scale=1,

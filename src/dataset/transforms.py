@@ -35,21 +35,22 @@ def image_grad(x: Tensor, n=1, keep_size=False) -> Tensor:
 
 
 class Resize(object):
-    def __init__(self, size: int):
+    def __init__(self, size: int, mode=cv2.INTER_NEAREST):
         if not size:
             raise AttributeError("Size should be positive number")
         self.size = size
+        self.mode = mode
 
     def __call__(self, image: np.ndarray):
         size = (self.size, self.size)
-        return cv2.resize(image, dsize=size, interpolation=cv2.INTER_AREA)
+        return cv2.resize(image, dsize=size, interpolation=self.mode)
 
     def __repr__(self):
         return "{}(size={})".format(Resize.__name__, self.size)
 
 
 class ResizeTensor(object):
-    def __init__(self, size: int, mode='nearest', normalize=True):
+    def __init__(self, size: int, mode='nearest', normalize=True, **kwargs):
         if not size:
             raise AttributeError("Size should be positive number")
         self.size = size
@@ -58,11 +59,15 @@ class ResizeTensor(object):
         self.align_corners = False
         if mode in ['bilinear', 'bicubic']:
             self.align_corners = True
+        self.kwargs = kwargs
 
     def __call__(self, t: Tensor):
         t = t.float().unsqueeze_(0)
-        t = F.interpolate(t, size=self.size, mode=self.mode, align_corners=self.align_corners)
+        t = F.interpolate(t, size=self.size, mode=self.mode,
+                          align_corners=self.align_corners, **self.kwargs)
         t = t.squeeze_(0)
+        if self.mode == 'bicubic':
+            t = t.clamp_(min=0, max=255)
         if self.normalize:
             return t / 255.
         return t.round_().byte()
