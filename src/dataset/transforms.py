@@ -17,23 +17,6 @@ def no_transforms(image: np.ndarray, size=256) -> Tensor:
     return to_tensor(image)
 
 
-def diff(x: Tensor, dim: int) -> Tensor:
-    mask = list(map(slice, x.shape[:dim]))
-    mask0 = mask + [slice(1, x.size(dim))]
-    mask1 = mask + [slice(0, -1)]
-    return x[mask0] - x[mask1]
-
-
-def image_grad(x: Tensor, n=1, keep_size=False) -> Tensor:
-    for _ in range(n):
-        x = diff(x, -1)
-        x = diff(x, -2)
-    if keep_size:
-        pad = [(n + i) // 2 for i in [0, 1, 0, 1]]
-        x = F.pad(x, pad)
-    return x
-
-
 class Resize(object):
     def __init__(self, size: int, mode=cv2.INTER_NEAREST):
         if not size:
@@ -49,6 +32,40 @@ class Resize(object):
         return "{}(size={})".format(Resize.__name__, self.size)
 
 
+def resize(t, size=None, scale=None, mode='nearest', align_corners=False, normalize=False):
+    # type: (Tensor, Optional[int], Optional[float], str, Optional[bool], Optional[bool]) -> Tensor
+    t = t.float().unsqueeze_(0)
+    t = F.interpolate(t, size=size, scale_factor=scale, mode=mode,
+                      # not sure if this is needed
+                      align_corners=mode in ['bilinear', 'bicubic'] or None)
+    t = t.clamp_(min=0, max=255).squeeze_(0)
+    if normalize:
+        return t.div_(255)
+    return t
+
+
+class UpscaleIfNeeded(object):
+    def __init__(self, target_size: int, scale: float, mode='nearest'):
+        if not target_size:
+            raise AttributeError("target_size should be positive number")
+        if not scale:
+            raise AttributeError("scale should be positive number")
+        self.target_size = target_size
+        self.scale = scale
+        self.mode = mode
+
+    def __call__(self, t: Tensor):
+        C, H, W = t.shape
+        S = self.target_size
+        if H < S or W < S:
+            t = resize(t, scale=self.scale, mode=self.mode, normalize=False)
+        return t
+
+    def __repr__(self):
+        return "{}(target_size={}, scale={}, mode={})".format(
+            UpscaleIfNeeded.__name__, self.target_size, self.scale, self.mode)
+
+
 class ResizeTensor(object):
     def __init__(self, size: int, mode='nearest', normalize=True):
         if not size:
@@ -56,25 +73,18 @@ class ResizeTensor(object):
         self.size = size
         self.mode = mode
         self.normalize = normalize
-        self.align_corners = False
-        if mode in ['bilinear', 'bicubic']:
-            # not sure if this is needed
-            self.align_corners = True
 
     def __call__(self, t: Tensor):
-        t = t.float().unsqueeze_(0)
-        t = F.interpolate(t, size=self.size, mode=self.mode, align_corners=self.align_corners)
-        t = t.clamp_(min=0, max=255).squeeze_(0)
-        if self.normalize:
-            return t.div_(255)
-        return t.round_().byte()
+        t = resize(t, size=self.size, mode=self.mode, normalize=self.normalize)
+        return t
 
     def __repr__(self):
-        return "{}(size={}, mode={})".format(Resize.__name__, self.size, self.mode)
+        return "{}(size={}, mode={}, normalize={})".format(
+            Resize.__name__, self.size, self.mode, self.normalize)
 
 
 class PadIfNeeded(object):
-    def __init__(self, size: int, mode='constant', value=0, normalize=True):
+    def __init__(self, size: int, mode='constant', value=0, normalize=False):
         if not size:
             raise AttributeError("Size should be positive number")
         self.size = size
@@ -121,6 +131,23 @@ class CropCenter(object):
 
     def __repr__(self):
         return "{}(size={})".format(CropCenter.__name__, self.size)
+
+
+def diff(x: Tensor, dim: int) -> Tensor:
+    mask = list(map(slice, x.shape[:dim]))
+    mask0 = mask + [slice(1, x.size(dim))]
+    mask1 = mask + [slice(0, -1)]
+    return x[mask0] - x[mask1]
+
+
+def image_grad(x: Tensor, n=1, keep_size=False) -> Tensor:
+    for _ in range(n):
+        x = diff(x, -1)
+        x = diff(x, -2)
+    if keep_size:
+        pad = [(n + i) // 2 for i in [0, 1, 0, 1]]
+        x = F.pad(x, pad)
+    return x
 
 
 class SpatialGradFilter(object):

@@ -18,11 +18,12 @@ log = logging.getLogger(__name__)
 
 class ImagesDataset(torch.utils.data.Dataset):
     def __init__(self, base_path: str, frames: int, sampler: FrameSampler,
-                 transforms: Optional[Transforms2D] = None,
+                 min_img_size=None, transforms: Optional[Transforms2D] = None,
                  transforms_3d: Optional[Transforms3D] = None,
                  sub_dirs: Optional[List[str]] = None):
         self.base_path = base_path
         self.frames = frames
+        self.min_img_size = min_img_size
         self.sampler = sampler
         self.transforms = transforms
         self.transforms_3d = transforms_3d
@@ -78,6 +79,12 @@ class ImagesDataset(torch.utils.data.Dataset):
         if os.path.isdir(path):
             sample_fn = self.sampler(meta.label)
             frames = ImagesDataset.read_folder(path, sample_fn)
+
+            if self.min_img_size is not None:
+                S = self.min_img_size
+                frames = list(filter(
+                    lambda x: x.shape[0] >= S and x.shape[1] >= S,
+                    frames))
 
             if len(frames) > 0:
                 transform_x = self.transforms or no_transforms

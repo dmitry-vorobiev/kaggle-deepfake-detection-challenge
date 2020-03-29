@@ -28,17 +28,6 @@ def activation_loss(x: Tensor, y: LongTensor) -> Tensor:
     return (neg_loss.sum() + pos_loss.sum()) / y.size(0)
 
 
-def combined_loss(out: ModelOut, inputs: Batch) -> Tensor:
-    h, x_hat, y_hat = out
-    x, y = inputs
-
-    loss1 = activation_loss(h, y)
-    loss2 = F.l1_loss(x_hat, x, reduction='mean') * 0.1
-    loss3 = F.binary_cross_entropy_with_logits(y_hat.squeeze(1), y.float())
-    
-    return loss1 + loss2 + loss3
-
-
 class ForensicTransferLoss:
     def __init__(self, act_w: int, rec_w: int):
         self.act_w = act_w
