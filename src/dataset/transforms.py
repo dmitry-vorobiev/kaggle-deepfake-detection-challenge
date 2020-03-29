@@ -58,17 +58,15 @@ class ResizeTensor(object):
         self.normalize = normalize
         self.align_corners = False
         if mode in ['bilinear', 'bicubic']:
+            # not sure if this is needed
             self.align_corners = True
 
     def __call__(self, t: Tensor):
         t = t.float().unsqueeze_(0)
-        t = F.interpolate(t, size=self.size, mode=self.mode,
-                          align_corners=self.align_corners)
-        t = t.squeeze_(0)
-        if self.mode == 'bicubic':
-            t = t.clamp_(min=0, max=255)
+        t = F.interpolate(t, size=self.size, mode=self.mode, align_corners=self.align_corners)
+        t = t.clamp_(min=0, max=255).squeeze_(0)
         if self.normalize:
-            return t / 255.
+            return t.div_(255)
         return t.round_().byte()
 
     def __repr__(self):
@@ -76,12 +74,13 @@ class ResizeTensor(object):
 
 
 class PadIfNeeded(object):
-    def __init__(self, size: int, mode='constant', value=0):
+    def __init__(self, size: int, mode='constant', value=0, normalize=True):
         if not size:
             raise AttributeError("Size should be positive number")
         self.size = size
         self.mode = mode
         self.value = value
+        self.normalize = normalize
 
     def __call__(self, t: Tensor):
         S = self.size
@@ -92,11 +91,36 @@ class PadIfNeeded(object):
         pad_W = (S - W) // 2
         pad = [pad_W, S - (W + pad_W),
                pad_H, S - (H + pad_H)]
-        return F.pad(t, pad)
+        if self.mode != 'constant':
+            t = t.float().unsqueeze_(0)
+        t = F.pad(t, pad, mode=self.mode, value=self.value)
+        if t.ndim > 3:
+            t = t.squeeze_(0)
+        if self.normalize:
+            return t.float().div_(255)
+        return t
 
     def __repr__(self):
         return "{}(size={}, mode={}, value={})".format(
             PadIfNeeded.__name__, self.size, self.mode, self.value)
+
+
+class CropCenter(object):
+    def __init__(self, size: int):
+        if not size:
+            raise AttributeError("Size should be positive number")
+        self.size = size
+
+    def __call__(self, t: Tensor):
+        S = int(self.size)
+        H, W = t.size(-2), t.size(-1)
+        y0 = int(round((H - S) / 2.))
+        x0 = int(round((W - S) / 2.))
+        t = t[:, y0:y0+S, x0:x0+S]
+        return t
+
+    def __repr__(self):
+        return "{}(size={})".format(CropCenter.__name__, self.size)
 
 
 class SpatialGradFilter(object):
@@ -125,15 +149,3 @@ class RandomHorizontalFlipSequence(object):
 
     def __repr__(self):
         return "{}(p={})".format(RandomHorizontalFlipSequence.__name__, self.p)
-
-
-def simple_transforms(img_size: int, mean: Mean = None,
-                      std: Std = None, hpf_n=-1) -> Callable[[Any], Tensor]:
-    ops = [Resize(img_size), T.ToTensor()]
-    if hpf_n > 0:
-        ops.append(SpatialGradFilter(order=hpf_n))
-    if mean and std:
-        if mean is None or std is None:
-            raise AttributeError('Please specify both mean and std')
-        ops.append(T.Normalize(mean=mean, std=std))
-    return T.Compose(ops)

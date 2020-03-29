@@ -61,7 +61,7 @@ def act_fn_from_str(name: str, neg_slope=0.0):
 
 class Encoder(nn.Module):
     def __init__(self, image_shape: Tuple[int, int, int], width: int,
-                 enc_depth: int, wide=False,
+                 depth: int, wide=False,
                  enc_att: Optional[List[int]] = None,
                  dec_att: Optional[List[int]] = None,
                  act_fn: Optional[str] = 'relu',
@@ -72,7 +72,7 @@ class Encoder(nn.Module):
             raise AttributeError("Only square images are supported!")
 
         max_depth = math.log2(H)
-        if enc_depth > max_depth:
+        if depth > max_depth:
             raise AttributeError(
                 f"enc_depth should be <= {int(max_depth)} given the "
                 f"image_size ({H}, {H})")
@@ -83,11 +83,11 @@ class Encoder(nn.Module):
         func = act_fn_from_str(act_fn, neg_slope)
 
         stem = [conv2D(C, width, bias=False), func]
-        encoder = stack_enc_blocks(width, enc_depth - 1, wide=wide,
+        encoder = stack_enc_blocks(width, depth-1, wide=wide,
                                    act_fn=func, attention=enc_att)
         self.encoder = nn.Sequential(*stem, *encoder)
 
-        decoder = stack_dec_blocks(width, enc_depth - 1, wide=wide,
+        decoder = stack_dec_blocks(width, depth-1, wide=wide,
                                    act_fn=func, attention=dec_att)
         dec_out = conv2D(width, C, kernel=3, stride=1, bias=False)
         self.decoder = nn.Sequential(*decoder, dec_out, nn.Tanh())
