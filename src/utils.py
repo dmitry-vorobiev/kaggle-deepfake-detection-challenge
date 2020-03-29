@@ -5,9 +5,9 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-from typing import Any, Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler, simple_transforms
+from dataset import HDF5Dataset, ImagesDataset, FrameSampler, BalancedSampler
 from dataset.hdf5 import Transforms2D, Transforms3D
 
 
@@ -63,6 +63,7 @@ def create_dataset(conf: DictConfig, title: str) -> Dataset:
     transforms, transforms_3d = create_transforms(conf)
     data = DatasetImpl(conf.dir,
                        frames=conf.sample.frames,
+                       min_img_size=conf.sample.get('min_size', None),
                        sampler=frame_sampler,
                        transforms=transforms,
                        transforms_3d=transforms_3d,

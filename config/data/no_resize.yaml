@@ -2,26 +2,30 @@ data:
   train:
     transforms:
       - transform:
-          class: torchvision.transforms.ToPILImage
+          class: torchvision.transforms.ToTensor
       - transform:
-          class: torchvision.transforms.CenterCrop
+          class: dataset.transforms.UpscaleIfBelow
+          params:
+            min_size: 86
+      - transform:
+          class: dataset.transforms.PadIfNeeded
           params:
             size: 256
+            mode: reflect
+            normalize: False
       - transform:
-          class: torchvision.transforms.ToTensor
+          class: dataset.transforms.CropCenter
+          params:
+            size: 256
       - transform:
           class: dataset.transforms.SpatialGradFilter
           params:
             order: 3
       - transform:
-          class: dataset.transforms.PadIfNeeded
-          params:
-            size: 256
-      - transform:
           class: torchvision.transforms.Normalize
           params:
-            mean: [1.86951418e-07, 1.75129537e-07, 1.65279768e-07]
-            std: [0.05009644, 0.04926367, 0.0494046]
+            mean: [1.27869941e-10, 2.11604847e-13, 1.58958332e-10]
+            std: [0.05257552, 0.05209232, 0.05260318]
     transforms_3d:
       - transform:
           class: dataset.transforms.RandomHorizontalFlipSequence
@@ -30,23 +34,27 @@ data:
   val:
     transforms:
       - transform:
-          class: torchvision.transforms.ToPILImage
+          class: torchvision.transforms.ToTensor
       - transform:
-          class: torchvision.transforms.CenterCrop
+          class: dataset.transforms.UpscaleIfBelow
+          params:
+            min_size: 86
+      - transform:
+          class: dataset.transforms.PadIfNeeded
           params:
             size: 256
+            mode: reflect
+            normalize: False
       - transform:
-          class: torchvision.transforms.ToTensor
+          class: dataset.transforms.CropCenter
+          params:
+            size: 256
       - transform:
           class: dataset.transforms.SpatialGradFilter
           params:
             order: 3
       - transform:
-          class: dataset.transforms.PadIfNeeded
-          params:
-            size: 256
-      - transform:
           class: torchvision.transforms.Normalize
           params:
-            mean: [1.86951418e-07, 1.75129537e-07, 1.65279768e-07]
-            std: [0.05009644, 0.04926367, 0.0494046]
+            mean: [1.27869941e-10, 2.11604847e-13, 1.58958332e-10]
+            std: [0.05257552, 0.05209232, 0.05260318]

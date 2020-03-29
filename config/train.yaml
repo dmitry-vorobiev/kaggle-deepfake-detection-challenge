@@ -7,7 +7,7 @@ hydra:
         filename: ${hydra.job.name}_${distributed.local_rank}.log
 
 defaults:
-  - data: default
+  - data: no_resize
   - model: encoder
   - loss: forensic-transfer
   - lr_scheduler: one-cycle
@@ -34,6 +34,7 @@ data:
     dir_list: ''
     sample:
       frames: 10
+      min_size: 38
       real_fake_ratio: 3.33
       sparse_frames_prob: 0.5
     # loader setting are per each GPU
@@ -46,6 +47,7 @@ data:
     chunks: 0, 1, 2, 3, 4
     sample:
       frames: 10
+      min_size: 38
       real_fake_ratio: 3.33
       sparse_frames_prob: 1.0
     loader:

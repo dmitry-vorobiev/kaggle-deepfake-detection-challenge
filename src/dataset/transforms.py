@@ -1,4 +1,5 @@
 import cv2
+import math
 import numpy as np
 import random
 import torch
@@ -44,26 +45,22 @@ def resize(t, size=None, scale=None, mode='nearest', align_corners=False, normal
     return t
 
 
-class UpscaleIfNeeded(object):
-    def __init__(self, target_size: int, scale: float, mode='nearest'):
-        if not target_size:
-            raise AttributeError("target_size should be positive number")
-        if not scale:
-            raise AttributeError("scale should be positive number")
-        self.target_size = target_size
-        self.scale = scale
-        self.mode = mode
+class UpscaleIfBelow(object):
+    def __init__(self, min_size: int):
+        if not min_size:
+            raise AttributeError("min_size should be positive number")
+        self.min_size = min_size
 
     def __call__(self, t: Tensor):
         C, H, W = t.shape
-        S = self.target_size
+        S = self.min_size
         if H < S or W < S:
-            t = resize(t, scale=self.scale, mode=self.mode, normalize=False)
+            scale = math.ceil(S / min(H, W))
+            t = resize(t, scale=scale, mode='nearest', normalize=False)
         return t
 
     def __repr__(self):
-        return "{}(target_size={}, scale={}, mode={})".format(
-            UpscaleIfNeeded.__name__, self.target_size, self.scale, self.mode)
+        return "{}(target_size={})".format(UpscaleIfBelow.__name__, self.min_size)
 
 
 class ResizeTensor(object):

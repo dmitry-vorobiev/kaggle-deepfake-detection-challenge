@@ -5,7 +5,7 @@ model:
     width: 8
     depth: 5
     wide: false
-    enc_att: []
-    dec_att: []
+    enc_att: [2]
+    dec_att: [2]
     act_fn: relu_inplace
     neg_slope: 0.0
