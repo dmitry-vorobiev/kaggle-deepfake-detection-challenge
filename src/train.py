@@ -36,6 +36,17 @@ GatheredOuts = Dict[str, Union[float, Tensor]]
 Metrics = Dict[str, Metric]
 
 
+def move_to_cpu(x):
+    if isinstance(x, Tensor):
+        return x.cpu()
+    elif isinstance(x, dict):
+        return {k: move_to_cpu(v) for k, v in x.items()}
+    elif isinstance(x, list):
+        return list(map(move_to_cpu, x))
+    else:
+        return x
+
+
 class TpuDiskSaver(DiskSaver):
     def __init__(self, dirname: str, atomic: bool = True, create_dir: bool = True,
                  require_empty: bool = True):
@@ -43,7 +54,6 @@ class TpuDiskSaver(DiskSaver):
 
     def __call__(self, checkpoint: Mapping, filename: str) -> None:
         path = os.path.join(self.dirname, filename)
-
         if not self._atomic:
             xm.save(checkpoint, path)
         else:
@@ -235,18 +245,12 @@ def run(conf: DictConfig):
 
     if num_replicas > 1:
         epoch_length = epoch_length // num_replicas
-        val_dl_args = dict(rank=rank, num_replicas=num_replicas)
+        loader_args = dict(rank=rank, num_replicas=num_replicas)
     else:
-        val_dl_args = dict()
+        loader_args = dict()
 
-    if use_tpu:
-        train_dl_args = dict(val_dl_args)
-        train_dl_args['epoch_length'] = epoch_length * epochs
-    else:
-        train_dl_args = val_dl_args
-
-    train_dl = create_train_loader(conf.data.train, **train_dl_args)
-    valid_dl = create_val_loader(conf.data.val, **val_dl_args)
+    train_dl = create_train_loader(conf.data.train, epoch_length=epoch_length, **loader_args)
+    valid_dl = create_val_loader(conf.data.val, **loader_args)
     train_sampler = train_dl.sampler
 
     if epoch_length < 1:
@@ -294,6 +298,7 @@ def run(conf: DictConfig):
         'optimizer': optim,
         'lr_scheduler': lr_scheduler
     }
+    save_path = cp.get('base_dir', os.getcwd())
 
     if rank == 0:
         log_freq = conf.logging.iter_freq
@@ -310,10 +315,9 @@ def run(conf: DictConfig):
             logging.info("Resume from a checkpoint: {}".format(cp.load))
             trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
 
+        logging.info("Saving checkpoints to {}".format(save_path))
+
     if rank == 0 or use_tpu:
-        save_path = cp.get('base_dir', os.getcwd())
-        if rank == 0:
-            logging.info("Saving checkpoints to {}".format(save_path))
         max_cp = max(int(cp.get('max_checkpoints', 1)), 1)
         Saver = TpuDiskSaver if use_tpu else DiskSaver
         save = Saver(save_path, create_dir=True, require_empty=True)
@@ -352,11 +356,11 @@ def run(conf: DictConfig):
         if conf.train.skip:
             evaluator.run(valid_dl)
         else:
+            loader = train_dl
             if use_tpu:
-                train_it = train_dl.per_device_loader(device)
-                trainer.run(train_it, max_epochs=epochs, epoch_length=epoch_length)
-            else:
-                trainer.run(train_dl, max_epochs=epochs, epoch_length=epoch_length)
+                # need to catch StopIteration before ignite, otherwise it will crash
+                loader = iter(_regenerate(train_dl, device))
+            trainer.run(loader, max_epochs=epochs, epoch_length=epoch_length)
     except Exception as e:
         import traceback
         print(traceback.format_exc())
@@ -364,7 +368,17 @@ def run(conf: DictConfig):
         pbar.close()
 
 
-@hydra.main(config_path="../config/train_tpu.yaml")
+def _regenerate(loader: pl.ParallelLoader, device: torch.device) -> Iterable[Batch]:
+    it = loader.per_device_loader(device)
+    while True:
+        try:
+            yield next(it)
+        except StopIteration:
+            it = loader.per_device_loader(device)
+            yield next(it)
+
+
+@hydra.main(config_path="../config/train.yaml")
 def main(conf: DictConfig):
     dist_conf = conf.distributed
     local_rank = dist_conf.local_rank
