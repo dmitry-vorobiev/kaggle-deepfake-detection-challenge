@@ -124,7 +124,8 @@ def create_tpu_trainer(model: nn.Module, criterion: Criterion, optim: Any,
                        device: torch.device, conf, metrics: Optional[Metrics] = None):
     def _update(e: Engine, batch: Batch) -> Dict[str, Tensor]:
         model.train()
-        batch = _prepare_batch(batch, device, non_blocking=True)
+        x, y = batch
+        batch = x.to(device), y.to(device)
         out = model(*batch)
         losses = criterion(out, batch)
 
@@ -206,6 +207,7 @@ def _upd_pbar_iter_from_cp(engine: Engine, pbar: ProgressBar) -> None:
 def run(conf: DictConfig):
     epochs = conf.train.epochs
     epoch_length = conf.train.epoch_length
+    torch.manual_seed(conf.general.seed)
 
     dist_conf = conf.distributed
     local_rank = dist_conf.local_rank
@@ -228,26 +230,31 @@ def run(conf: DictConfig):
             torch.cuda.set_device(conf.general.gpu)
         device = torch.device('cuda')
 
-    if num_replicas > 1:
-        epoch_length = epoch_length // num_replicas
-        loader_args = dict(rank=rank, num_replicas=num_replicas)
-    else:
-        loader_args = dict()
-    torch.manual_seed(conf.general.seed)
-
     if rank == 0:
         print(conf.pretty())
 
-    train_dl = create_train_loader(conf.data.train, epoch_length=epoch_length, **loader_args)
-    valid_dl = create_val_loader(conf.data.val, **loader_args)
-    train_sampler = train_dl.sampler
-    val_epoch_length = len(valid_dl)
+    if num_replicas > 1:
+        epoch_length = epoch_length // num_replicas
+        val_dl_args = dict(rank=rank, num_replicas=num_replicas)
+    else:
+        val_dl_args = dict()
+
     if use_tpu:
-        train_dl = pl.ParallelLoader(train_dl, [device]).per_device_loader(device)
-        valid_dl = pl.ParallelLoader(valid_dl, [device]).per_device_loader(device)
+        train_dl_args = dict(val_dl_args)
+        train_dl_args['epoch_length'] = epoch_length * epochs
+    else:
+        train_dl_args = val_dl_args
+
+    train_dl = create_train_loader(conf.data.train, **train_dl_args)
+    valid_dl = create_val_loader(conf.data.val, **val_dl_args)
+    train_sampler = train_dl.sampler
 
     if epoch_length < 1:
         epoch_length = len(train_dl)
+
+    if use_tpu:
+        train_dl = pl.ParallelLoader(train_dl, [device])
+        valid_dl = pl.ParallelLoader(valid_dl, [device])
 
     model = instantiate(conf.model).to(device)
     if distributed:
@@ -333,7 +340,10 @@ def run(conf: DictConfig):
             torch.cuda.synchronize(device)
         if use_tpu:
             xm.rendezvous('validate_{}'.format(e.state.iteration))
-        evaluator.run(valid_dl, epoch_length=val_epoch_length)
+            valid_it = valid_dl.per_device_loader(device)
+            evaluator.run(valid_it, epoch_length=len(valid_dl))
+        else:
+            evaluator.run(valid_dl)
 
     eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
     trainer.add_event_handler(eval_event, run_validation)
@@ -342,7 +352,11 @@ def run(conf: DictConfig):
         if conf.train.skip:
             evaluator.run(valid_dl)
         else:
-            trainer.run(train_dl, max_epochs=epochs, epoch_length=epoch_length)
+            if use_tpu:
+                train_it = train_dl.per_device_loader(device)
+                trainer.run(train_it, max_epochs=epochs, epoch_length=epoch_length)
+            else:
+                trainer.run(train_dl, max_epochs=epochs, epoch_length=epoch_length)
     except Exception as e:
         import traceback
         print(traceback.format_exc())
@@ -350,7 +364,7 @@ def run(conf: DictConfig):
         pbar.close()
 
 
-@hydra.main(config_path="../config/train.yaml")
+@hydra.main(config_path="../config/train_tpu.yaml")
 def main(conf: DictConfig):
     dist_conf = conf.distributed
     local_rank = dist_conf.local_rank
