@@ -2,7 +2,7 @@ lr_scheduler:
   class: torch.optim.lr_scheduler.OneCycleLR
   params:
     total_steps: ???
-    max_lr: 0.002
+    max_lr: 0.001
     pct_start: 0.3
     anneal_strategy: cos
     base_momentum: 0.85

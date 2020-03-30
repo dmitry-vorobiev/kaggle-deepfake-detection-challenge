@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from ..efficient_attention.efficient_attention import EfficientAttention
 from ..layers import conv2D, relu, ActivationFn, EncoderBlock, DecoderBlock
-from ..ops import select, decide
+from ..ops import select, select_oop, decide
 
 
 def stack_enc_blocks(width: int, n: int, wide=False,
@@ -102,7 +102,7 @@ class Encoder(nn.Module):
             h = self.encoder(x[:, :, f])
 
             if self.is_train:
-                hc = select(h, y)
+                hc = select_oop(h, y)
                 x1 = self.decoder(hc).unsqueeze(2)
                 x_rec.append(x1)
 

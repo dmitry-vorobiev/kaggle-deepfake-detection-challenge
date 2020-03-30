@@ -1,0 +1,11 @@
+model:
+  class: model.zoo.encoder.Encoder
+  params:
+    image_shape: [3, 256, 256]
+    width: 8
+    depth: 5
+    wide: false
+    enc_att: [2]
+    dec_att: [2]
+    act_fn: relu
+    neg_slope: 0.0

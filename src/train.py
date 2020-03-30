@@ -2,6 +2,7 @@ import datetime as dt
 import hydra
 import logging
 import os
+import tempfile
 import time
 import torch
 import torch.distributed as dist
@@ -15,7 +16,7 @@ from ignite.utils import convert_tensor
 from omegaconf import DictConfig
 from torch import nn, FloatTensor, Tensor
 from torch.nn.parallel import DistributedDataParallel
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 from model import ModelOut
 from utils import create_train_loader, create_val_loader
@@ -33,6 +34,29 @@ Losses = Dict[str, Tensor]
 Criterion = Callable[[ModelOut, Batch], Losses]
 GatheredOuts = Dict[str, Union[float, Tensor]]
 Metrics = Dict[str, Metric]
+
+
+class TpuDiskSaver(DiskSaver):
+    def __init__(self, dirname: str, atomic: bool = True, create_dir: bool = True,
+                 require_empty: bool = True):
+        super().__init__(dirname, atomic, create_dir, require_empty)
+
+    def __call__(self, checkpoint: Mapping, filename: str) -> None:
+        path = os.path.join(self.dirname, filename)
+
+        if not self._atomic:
+            xm.save(checkpoint, path)
+        else:
+            tmp = tempfile.NamedTemporaryFile(delete=False, dir=self.dirname)
+            try:
+                xm.save(checkpoint, tmp.file)
+            except BaseException:
+                tmp.close()
+                os.remove(tmp.name)
+                raise
+            else:
+                tmp.close()
+                os.rename(tmp.name, path)
 
 
 def humanize_time(timestamp: float) -> str:
@@ -217,6 +241,7 @@ def run(conf: DictConfig):
     train_dl = create_train_loader(conf.data.train, epoch_length=epoch_length, **loader_args)
     valid_dl = create_val_loader(conf.data.val, **loader_args)
     train_sampler = train_dl.sampler
+    val_epoch_length = len(valid_dl)
     if use_tpu:
         train_dl = pl.ParallelLoader(train_dl, [device]).per_device_loader(device)
         valid_dl = pl.ParallelLoader(valid_dl, [device]).per_device_loader(device)
@@ -278,11 +303,13 @@ def run(conf: DictConfig):
             logging.info("Resume from a checkpoint: {}".format(cp.load))
             trainer.add_event_handler(Events.STARTED, _upd_pbar_iter_from_cp, pbar)
 
+    if rank == 0 or use_tpu:
         save_path = cp.get('base_dir', os.getcwd())
-        logging.info("Saving checkpoints to {}".format(save_path))
+        if rank == 0:
+            logging.info("Saving checkpoints to {}".format(save_path))
         max_cp = max(int(cp.get('max_checkpoints', 1)), 1)
-        save = DiskSaver(save_path, create_dir=True, require_empty=True)
-
+        Saver = TpuDiskSaver if use_tpu else DiskSaver
+        save = Saver(save_path, create_dir=True, require_empty=True)
         make_checkpoint = Checkpoint(to_save, save, n_saved=max_cp)
         cp_iter = cp.interval_iteration
         cp_epoch = cp.interval_epoch
@@ -302,8 +329,11 @@ def run(conf: DictConfig):
         Events.EPOCH_STARTED, lambda e: train_sampler.set_epoch(e.state.epoch - 1))
 
     def run_validation(e: Engine):
-        torch.cuda.synchronize(device)
-        evaluator.run(valid_dl)
+        if distributed:
+            torch.cuda.synchronize(device)
+        if use_tpu:
+            xm.rendezvous('validate_{}'.format(e.state.iteration))
+        evaluator.run(valid_dl, epoch_length=val_epoch_length)
 
     eval_event = Events.EPOCH_COMPLETED(every=conf.validate.interval)
     trainer.add_event_handler(eval_event, run_validation)

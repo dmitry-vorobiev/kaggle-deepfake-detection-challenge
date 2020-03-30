@@ -40,6 +40,15 @@ def select(h: Tensor, y: Tensor) -> Tensor:
     return h
 
 
+def select_oop(h: Tensor, y: Tensor) -> Tensor:
+    y = reshape_as(y, h)
+    h0, h1 = h.chunk(2, dim=1)
+    h0 = h0 * (1 - y)
+    h1 = h1 * y
+    h = torch.cat([h0, h1], dim=1)
+    return h
+
+
 def act(h: Tensor, y: Tensor) -> Tensor:
     N = y.size(0)
     y = reshape_as(y, h)

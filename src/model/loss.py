@@ -4,7 +4,7 @@ from torch import FloatTensor, LongTensor, Tensor
 from typing import Dict, Tuple
 
 from . import ModelOut
-from .ops import act, ones, zeros
+from .ops import act, ones, zeros, reshape_as
 
 Batch = Tuple[FloatTensor, LongTensor]
 
@@ -28,6 +28,22 @@ def activation_loss(x: Tensor, y: LongTensor) -> Tensor:
     return (neg_loss.sum() + pos_loss.sum()) / y.size(0)
 
 
+def activation_loss_fixed_shape(x: Tensor, y: LongTensor) -> Tensor:
+    N = y.size(0)
+    device = x.device
+
+    a0 = act(x, zeros(N, device))
+    a1 = act(x, ones(N, device))
+
+    y1 = reshape_as(y, a0)
+    y0 = 1 - y1
+    
+    neg_loss = ((a0 - 1) * y0).abs() + a1 * y0
+    pos_loss = ((a1 - 1) * y1).abs() + a0 * y1
+
+    return (neg_loss.sum() + pos_loss.sum()) / y.size(0)
+
+
 class ForensicTransferLoss:
     def __init__(self, act_w: int, rec_w: int):
         self.act_w = act_w
@@ -37,7 +53,7 @@ class ForensicTransferLoss:
                  inputs: Batch) -> Dict[str, Tensor]:
         h, x_hat = model_outs
         x, y = inputs
-        act_loss = activation_loss(h, y)
+        act_loss = activation_loss_fixed_shape(h, y)
         rec_loss = F.l1_loss(x_hat, x, reduction='mean')
         total_loss = act_loss * self.act_w + rec_loss * self.rec_w
         out = dict(

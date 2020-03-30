@@ -1,14 +1,14 @@
 hydra:
   run:
-    dir: /media/dmitry/data/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: /dfdc/outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
   job_logging:
     handlers:
       file:
-        filename: ${hydra.job.name}_${distributed.local_rank}.log
+        filename: ${hydra.job.name}.log
 
 defaults:
   - data: no_resize
-  - model: encoder
+  - model: encoder_tpu
   - loss: forensic-transfer
   - lr_scheduler: one-cycle
   - optimizer: adam_w
@@ -23,13 +23,13 @@ distributed:
   url: env://
 
 tpu:
-  enabled: false
-  num_cores: 1
+  enabled: true
+  num_cores: 8
 
 data:
   train:
     type: hdf5
-    dir: /home/dmitry/projects/dfdc/data/dfdc-crops
+    dir: /dfdc/data
     chunks: 0 - 50
     dir_list: ''
     sample:
@@ -43,8 +43,8 @@ data:
       workers: 1
   val:
     type: hdf5
-    dir: /home/dmitry/projects/dfdc/data/dfdc-crops
-    chunks: 0, 28, 32, 43, 49
+    dir: /dfdc/data
+    chunks: 0, 1, 28, 32, 43, 49
     sample:
       frames: 10
       min_size: 38
@@ -55,22 +55,22 @@ data:
       workers: 1
 
 optimizer:
-  step_interval: 2
+  step_interval: 1
 
 train:
   skip: false
   epochs: 100
-  epoch_length: 16000
+  epoch_length: 8000
   checkpoints:
     load: null
     base_dir: null
     interval_epoch: 1
-    interval_iteration: 500
+    interval_iteration: 1000
     max_checkpoints: 100
 
 validate:
-  interval: 1
+  interval: 5
 
 logging:
   model: false
-  iter_freq: 100
+  iter_freq: 50
