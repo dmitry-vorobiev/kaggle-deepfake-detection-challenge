@@ -1,0 +1,34 @@
+data:
+  train:
+    transforms:
+      - transform:
+          class: dataset.transforms.Resize
+          params:
+            size: 300
+            mode: 2
+      - transform:
+          class: torchvision.transforms.ToTensor
+      - transform:
+          class: torchvision.transforms.Normalize
+          params:
+            mean: [0.485, 0.456, 0.406]
+            std: [0.229, 0.224, 0.225]
+    transforms_3d:
+      - transform:
+          class: dataset.transforms.RandomHorizontalFlipSequence
+          params:
+            p: 0.5
+  val:
+    transforms:
+      - transform:
+          class: dataset.transforms.Resize
+          params:
+            size: 300
+            mode: 2
+      - transform:
+          class: torchvision.transforms.ToTensor
+      - transform:
+          class: torchvision.transforms.Normalize
+          params:
+            mean: [0.485, 0.456, 0.406]
+            std: [0.229, 0.224, 0.225]

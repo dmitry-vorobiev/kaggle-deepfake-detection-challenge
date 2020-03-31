@@ -268,7 +268,7 @@ def run(conf: DictConfig):
         print(model)
 
     loss = instantiate(conf.loss)
-    optim = instantiate(conf.optimizer, model.parameters())
+    optim = instantiate(conf.optimizer, filter(lambda x: x.requires_grad, model.parameters()))
     metrics = create_metrics(loss.keys(), device if distributed else None)
     build_trainer_fn = create_tpu_trainer if use_tpu else create_trainer
     trainer = build_trainer_fn(model, loss, optim, device, conf, metrics)
