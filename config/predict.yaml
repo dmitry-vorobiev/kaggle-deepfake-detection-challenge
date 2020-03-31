@@ -2,10 +2,6 @@ hydra:
   run:
     dir: /media/dmitry/data/predicts/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-defaults:
-  - data: default
-  - model: samwise
-
 general:
   seed: 333
   save_dir: null
@@ -14,7 +10,7 @@ general:
 data:
   test:
     type: video # just a hint, no effect
-    dir: /media/dmitry/data/dfdc-videos/dfdc_train_part_0
+    dir: /media/dmitry/data/dfdc-videos/dfdc_train_part_38
     max_open_files: 300
     sample:
       frames: 10
@@ -24,11 +20,23 @@ data:
     loader:
       batch_size: 1
       workers: 1
+    transforms:
+      - transform:
+          class: dataset.transforms.ResizeTensor
+          params:
+            size: 300
+            mode: bicubic
+            normalize: true
+      - transform:
+          class: torchvision.transforms.Normalize
+          params:
+            mean: [0.485, 0.456, 0.406]
+            std: [0.229, 0.224, 0.225]
 
 face-detection:
   encoder: mnet
   weights: /home/dmitry/projects/dfdc/data/weights/mobilenet0.25_Final.pth
-  batch_size: 64
+  batch_size: 32
   score_thresh: 0.75
   score_thresh_step: 0.05
   score_thresh_min: 0.5
@@ -39,18 +47,12 @@ face-detection:
   max_face_num_thresh: 0.25
 
 model:
-  class: model.zoo.samwise.Samwise
+  class: model.zoo.efficient_kek.EfficientKek
   params:
-    image_shape: [3, 256, 256]
-    width: 8
-    enc_depth: 5
-    aux_depth: 3
-    wide: false
-    reduce: rnn
-    rnn_dim: 256
-    p_emb_drop: 0.2
-    p_out_drop: 0.2
-    act_fn: relu
-    neg_slope: 0.0
-    train: false
-  weights: /media/dmitry/data/outputs/2020-03-27/15-07-23/checkpoint_45000.pth
+    bb: tf_efficientnet_b3_ns
+    bb_weights: null
+    rnn_out: 256
+    p_embed: 0.1
+    p_input: 0.5
+    p_out: 0.2
+  weights: /media/dmitry/data/outputs/2020-03-31/16-27-17/checkpoint_4000.pth

@@ -3,7 +3,7 @@ import torch
 
 from ..fastai import RNNDropout
 from torch import nn, Tensor
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 class RNNBlock(nn.Module):
@@ -33,10 +33,11 @@ class RNNBlock(nn.Module):
         return x
 
 
-def build_encoder(name: str, weights: str, freeze=True) -> Tuple[nn.Module, int]:
+def build_encoder(name: str, weights=None, freeze=True) -> Tuple[nn.Module, int]:
     model = geffnet.create_model(name, pretrained=False)
-    weights = torch.load(weights)
-    model.load_state_dict(weights)
+    if weights is not None:
+        weights = torch.load(weights)
+        model.load_state_dict(weights)
     layers = list(model.children())
     model = nn.Sequential(*layers[:-1])
     if freeze:
@@ -49,7 +50,7 @@ def build_encoder(name: str, weights: str, freeze=True) -> Tuple[nn.Module, int]
 
 
 class EfficientKek(nn.Module):
-    def __init__(self, bb: str, bb_weights: str, rnn_out: int,
+    def __init__(self, bb: str, rnn_out: int, bb_weights: Optional[str] = None,
                  p_embed=0.1, p_input=0.5, p_out=0.2):
         super(EfficientKek, self).__init__()
         self.encoder, enc_out_ch = build_encoder(bb, bb_weights)

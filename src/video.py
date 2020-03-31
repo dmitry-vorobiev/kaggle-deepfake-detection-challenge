@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 import nvidia.dali as dali
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 
 class VideoPipe(dali.pipeline.Pipeline):
@@ -20,7 +20,8 @@ class VideoPipe(dali.pipeline.Pipeline):
         return output, labels
 
 
-def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None) -> Optional[np.ndarray]:
+def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None, with_meta=False
+                    ) -> Union[Optional[np.ndarray], Tuple[Optional[np.ndarray], dict]]:
     """Reads frames that are always evenly spaced throughout the video.
 
     Arguments:
@@ -30,7 +31,8 @@ def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None) -> Optional
         jitter: if not 0, adds small random offsets to the frame indices;
             this is useful so we don't always land on even or odd frames
         seed: random seed for jittering; if you set this to a fixed value,
-            you probably want to set it only on the first video 
+            you probably want to set it only on the first video
+        with_meta: also returns metadata
 
     Original: https://www.kaggle.com/humananalog/deepfakes-inference-demo
     """
@@ -47,6 +49,13 @@ def read_frames_cv2(path: str, num_frames: int, jitter=0, seed=None) -> Optional
         jitter_offsets = np.random.randint(-jitter, jitter, len(frame_idxs))
         frame_idxs = np.clip(frame_idxs + jitter_offsets, 0, frame_count - 1)
     result = read_frames_at_indices(path, capture, frame_idxs)
+    if with_meta:
+        metadata = dict(
+            frames=frame_count,
+            width=capture.get(cv2.CAP_PROP_FRAME_WIDTH),
+            height=capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        capture.release()
+        return result, metadata
     capture.release()
     return result
 

@@ -112,6 +112,8 @@ def load_model(conf: DictConfig):
     if 'model' in state.keys():
         state = state['model']
     model.load_state_dict(state)
+    for p in model.parameters():
+        p.requires_grad_(False)
     model.eval()
     return model
 

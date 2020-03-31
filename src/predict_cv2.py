@@ -1,6 +1,7 @@
 import gc
 import hydra
 import logging
+import math
 import numpy as np
 import os
 import pandas as pd
@@ -28,7 +29,7 @@ from predict import merge_detector_cfg, load_model
 from video import read_frames_cv2
 
 
-def find_faces(frames: Tensor, model: torch.nn.Module,
+def find_faces(frames: Tensor, chunk_size: int, model: torch.nn.Module,
                device: torch.device, conf: Dict[str, Any]) -> List[Tensor]:
     D, H, W, C = frames.shape
     # D, H, W, C -> D, C, H, W
@@ -38,7 +39,6 @@ def find_faces(frames: Tensor, model: torch.nn.Module,
     priors = prior_box.forward().to(device)
     scale = scale.to(device)
 
-    chunk_size = conf["batch_size"]
     detections = []
     for start in range(0, D, chunk_size):
         end = start + chunk_size
@@ -128,10 +128,12 @@ def main(conf: DictConfig):
             _save()
             gc.collect()
         try:
-            frames = read_frames_cv2(path, reader_conf.frames)
+            frames, meta = read_frames_cv2(path, reader_conf.frames, with_meta=True)
             if frames is not None and len(frames) > 0:
                 frames = torch.from_numpy(frames).to(device)
-                faces = crop_faces(frames)
+                px_ratio = 1920 * 1080 / meta['width'] / meta['height']
+                bs = math.ceil(face_det_conf['batch_size'] / px_ratio)
+                faces = crop_faces(frames, bs)
                 del frames
                 if len(faces) > 0:
                     y_hat = _predict(faces)
