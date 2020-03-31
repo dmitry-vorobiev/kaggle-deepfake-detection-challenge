@@ -81,4 +81,4 @@ class EfficientKek(nn.Module):
     def to_y(y_hat: Tensor, _: any):
         y_pred = y_hat.detach()
         y_pred = torch.sigmoid(y_pred).squeeze_(1)
-        return y_pred.clamp_(0.05, 0.95)
+        return y_pred.clamp_(0.1, 0.9)

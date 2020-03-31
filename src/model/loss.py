@@ -5,6 +5,7 @@ from typing import Dict, Tuple
 
 from . import ModelOut
 from .ops import act, ones, zeros, reshape_as
+from torch import nn
 
 Batch = Tuple[FloatTensor, LongTensor]
 
@@ -93,6 +94,47 @@ class BCELoss(object):
         x, y = batch
         bce_loss = F.binary_cross_entropy_with_logits(
             y_hat.squeeze(1), y.float())
+        out = dict(loss=bce_loss)
+        return out
+
+    @staticmethod
+    def keys():
+        return ['loss']
+
+
+# https://github.com/fastai/course-v3/blob/master/nbs/dl2/exp/nb_10b.py
+def reduce_loss(loss, reduction='mean'):
+    return loss.mean() if reduction == 'mean' else loss.sum() if reduction == 'sum' else loss
+
+
+# https://github.com/fastai/course-v3/blob/8faeb66c03fc6719c5a6cf4ef5befa79a424f838/nbs/dl2/exp/nb_09.py#L127
+def lin_comb(v1, v2, beta): return beta*v1 + (1-beta)*v2
+
+
+# https://github.com/fastai/course-v3/blob/master/nbs/dl2/exp/nb_10b.py
+class LabelSmoothingCrossEntropy(nn.Module):
+    def __init__(self, ε: float = 0.1, reduction='mean'):
+        super().__init__()
+        self.ε = ε
+        self.reduction = reduction
+
+    def forward(self, output, target):
+        c = output.size()[-1]
+        log_preds = F.log_softmax(output, dim=-1)
+        loss = reduce_loss(-log_preds.sum(dim=-1), self.reduction)
+        nll = F.nll_loss(log_preds, target, reduction=self.reduction)
+        return lin_comb(loss/c, nll, self.ε)
+
+
+class SmoothBCELoss(object):
+    def __init__(self, eps=0.1):
+        self.func = LabelSmoothingCrossEntropy(eps)
+
+    def __call__(self, model_out: Tuple[Tensor, any], batch: Batch) -> Dict[str, Tensor]:
+        y_hat = model_out[0]
+        x, y = batch
+        y_hat = torch.cat([(1 - y_hat), y_hat], dim=1)
+        bce_loss = self.func(y_hat, y)
         out = dict(loss=bce_loss)
         return out
 

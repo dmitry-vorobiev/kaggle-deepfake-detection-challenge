@@ -1,0 +1,4 @@
+loss:
+  class: model.loss.SmoothBCELoss
+  params:
+    eps: 0.1
