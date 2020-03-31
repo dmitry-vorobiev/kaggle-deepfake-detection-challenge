@@ -56,7 +56,7 @@ class RNNBlock(nn.Module):
         x_mean = x.mean(0)
         x_max, _ = x.max(0)
         x = torch.cat([x_mean, x_max], dim=1)
-        return x[-1]
+        return x
 
 
 class Samwise(nn.Module):

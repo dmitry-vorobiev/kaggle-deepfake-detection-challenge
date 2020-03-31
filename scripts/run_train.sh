@@ -6,4 +6,4 @@ python -u src/distributed_launch.py --nproc_per_node=2 src/train.py \
   data.train.loader.batch_size=15 \
   optimizer.step_interval=2 \
   train.epoch_length=8000 \
-  train.checkpoints.load=/media/dmitry/data/outputs/2020-03-29/16-18-05/checkpoint_12000.pth
+  train.checkpoints.load=/media/dmitry/data/outputs/2020-03-30/20-35-15/checkpoint_24000.pth

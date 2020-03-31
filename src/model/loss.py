@@ -44,7 +44,7 @@ def activation_loss_fixed_shape(x: Tensor, y: LongTensor) -> Tensor:
     return (neg_loss.sum() + pos_loss.sum()) / y.size(0)
 
 
-class ForensicTransferLoss:
+class ForensicTransferLoss(object):
     def __init__(self, act_w: int, rec_w: int):
         self.act_w = act_w
         self.rec_w = rec_w
@@ -53,7 +53,7 @@ class ForensicTransferLoss:
                  inputs: Batch) -> Dict[str, Tensor]:
         h, x_hat = model_outs
         x, y = inputs
-        act_loss = activation_loss_fixed_shape(h, y)
+        act_loss = activation_loss(h, y)
         rec_loss = F.l1_loss(x_hat, x, reduction='mean')
         total_loss = act_loss * self.act_w + rec_loss * self.rec_w
         out = dict(
@@ -62,7 +62,8 @@ class ForensicTransferLoss:
             rec_loss=rec_loss)
         return out
 
-    def keys(self):
+    @staticmethod
+    def keys():
         return ['loss', 'act_loss', 'rec_loss']
 
 
@@ -81,5 +82,20 @@ class TripleLoss(ForensicTransferLoss):
         out['bce_loss'] = bce_loss
         return out
 
-    def keys(self):
+    @staticmethod
+    def keys():
         return ['loss', 'act_loss', 'rec_loss', 'bce_loss']
+
+
+class BCELoss(object):
+    def __call__(self, model_out: Tuple[Tensor, any], batch: Batch) -> Dict[str, Tensor]:
+        y_hat = model_out[0]
+        x, y = batch
+        bce_loss = F.binary_cross_entropy_with_logits(
+            y_hat.squeeze(1), y.float())
+        out = dict(loss=bce_loss)
+        return out
+
+    @staticmethod
+    def keys():
+        return ['loss']

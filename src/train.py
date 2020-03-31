@@ -333,7 +333,7 @@ def run(conf: DictConfig):
                 trainer.add_event_handler(save_event, make_checkpoint)
 
     if 'load' in cp.keys() and cp.load:
-        Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load))
+        Checkpoint.load_objects(to_load=to_save, checkpoint=torch.load(cp.load, map_location=device))
 
     assert train_sampler is not None
     trainer.add_event_handler(
@@ -368,7 +368,7 @@ def run(conf: DictConfig):
         pbar.close()
 
 
-def _regenerate(loader: pl.ParallelLoader, device: torch.device) -> Iterable[Batch]:
+def _regenerate(loader: any, device: torch.device) -> Iterable[Batch]:
     it = loader.per_device_loader(device)
     while True:
         try:

@@ -69,7 +69,7 @@ train:
     max_checkpoints: 100
 
 validate:
-  interval: 1
+  interval: 10
 
 logging:
   model: false

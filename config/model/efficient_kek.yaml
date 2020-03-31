@@ -1,0 +1,8 @@
+model:
+  class: model.zoo.efficient_kek.EfficientKek
+  params:
+    bb: tf_efficientnet_b3_ns
+    bb_weights: /home/dmitry/projects/dfdc/data/weights/tf_efficientnet_b3_ns-9d44bf68.pth
+    rnn_in: 1536
+    rnn_out: 256
+    p_out_drop: 0.25
