@@ -131,8 +131,8 @@ def main(conf: DictConfig):
             frames, meta = read_frames_cv2(path, reader_conf.frames, with_meta=True)
             if frames is not None and len(frames) > 0:
                 frames = torch.from_numpy(frames).to(device)
-                px_ratio = 1920 * 1080 / meta['width'] / meta['height']
-                bs = math.ceil(face_det_conf['batch_size'] / px_ratio)
+                px_ratio = meta['width'] * meta['height'] / (1920 * 1080)
+                bs = math.ceil(face_det_conf['batch_size'] / max(px_ratio, 1.0))
                 faces = crop_faces(frames, bs)
                 del frames
                 if len(faces) > 0:
